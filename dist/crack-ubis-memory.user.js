@@ -18,12 +18,24 @@
 /* Deterministic, browser-safe retrieval. No network or storage access. */
 const CrackMemoryEngine = (() => {
   const STOP = new Set(['그리고', '하지만', '그래서', '그런데', '지금', '오늘', '이번', '현재', '정말', '조금', '있다', '없다', '한다', '했다', 'there', 'this', 'that', 'with', 'from']);
+  const AUTO_STOP = new Set(['그렇게', '그랬다', '했는데', '있었다', '말했다', '하는데', '이제는', '그녀는', '그들은', '자신의', '했다는', '그것은', '그대로', '다시', '진짜', '계속', '크리는']);
+  const PARTICLES = ['으로', '에서', '에게', '처럼', '까지', '부터', '만큼', '조차', '마다', '은', '는', '이', '가', '을', '를', '의', '에', '와', '과', '도', '만', '로'];
   const START = '<!--CRACK_UBIS_MEMORY_START';
   const END = 'CRACK_UBIS_MEMORY_END-->';
   const BLOCK = /\n*<!--CRACK_UBIS_MEMORY_START\b[\s\S]*?CRACK_UBIS_MEMORY_END-->/g;
 
   function stripOwnBlock(value) {
     return String(value || '').replace(BLOCK, '').trimEnd();
+  }
+
+  function searchText(value) {
+    return stripOwnBlock(value)
+      .replace(/```INFO\b[\s\S]*?```/gi, ' ')
+      .replace(/!\[[^\]]*\]\(https?:\/\/[^)]*\)/g, ' ')
+      .replace(/https?:\/\/\S+/g, ' ')
+      .replace(/^>\s*N\+\d+[^\n]*$/gm, ' ')
+      .replace(/^>\s*$/gm, ' ')
+      .trim();
   }
 
   function terms(value) {
@@ -33,10 +45,20 @@ const CrackMemoryEngine = (() => {
       if (STOP.has(word) || (/^[a-z0-9_]+$/.test(word) && word.length < 3)) continue;
       out.push(word);
       if (/^[가-힣]{3,}$/.test(word)) {
+        const particle = PARTICLES.find(part => word.endsWith(part) && word.length - part.length >= 2);
+        if (particle) out.push(word.slice(0, -particle.length));
         for (let i = 0; i + 1 < word.length; i++) out.push(word.slice(i, i + 2));
       }
     }
     return out;
+  }
+
+  function anchorWords(value) {
+    const words = String(value || '').normalize('NFKC').toLowerCase().match(/[a-z0-9_]+|[가-힣]+/g) || [];
+    return [...new Set(words.map(word => {
+      const particle = PARTICLES.find(part => word.endsWith(part) && word.length - part.length >= 2);
+      return particle ? word.slice(0, -particle.length) : word;
+    }).filter(word => word.length >= 2 && !STOP.has(word) && !AUTO_STOP.has(word)))];
   }
 
   function unitsFromMessages(messages, chatId) {
@@ -44,7 +66,7 @@ const CrackMemoryEngine = (() => {
     for (let order = 0; order < messages.length; order++) {
       const m = messages[order];
       if (!m || !m.id || !['user', 'assistant'].includes(m.role)) continue;
-      const clean = stripOwnBlock(m.text).trim();
+      const clean = searchText(m.text);
       if (!clean) continue;
       const paragraphs = clean.split(/\n\s*\n/).filter(Boolean);
       for (let paragraph = 0; paragraph < paragraphs.length; paragraph++) {
@@ -69,7 +91,11 @@ const CrackMemoryEngine = (() => {
     const df = new Map();
     for (const doc of docs) for (const term of doc.tf.keys()) df.set(term, (df.get(term) || 0) + 1);
     const avg = docs.reduce((sum, doc) => sum + doc.length, 0) / (docs.length || 1);
-    return { docs, df, avg: Math.max(1, avg) };
+    const entities = new Set();
+    for (const doc of docs) {
+      for (const match of doc.unit.text.matchAll(/💬\s*([가-힣]{2,8})\s*\|/g)) entities.add(match[1].toLowerCase());
+    }
+    return { docs, df, entities, avg: Math.max(1, avg) };
   }
 
   function search(ix, query, options = {}) {
@@ -96,7 +122,8 @@ const CrackMemoryEngine = (() => {
         }
         const freq = ix.df.get(term) || 0;
         const idf = Math.log(1 + (n - freq + 0.5) / (freq + 0.5));
-        score += idf * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * doc.length / ix.avg));
+        const termWeight = term.length === 2 && !ix.entities.has(term) ? 0.2 : 1;
+        score += termWeight * idf * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * doc.length / ix.avg));
         matched.push(term);
         if (term.length >= 3 && freq <= Math.max(3, Math.floor(n * 0.2))) strong.push(term);
       }
@@ -110,7 +137,19 @@ const CrackMemoryEngine = (() => {
     const ranked = search(ix, query, options);
     if (!ranked.length) return { ranked, selected: [], reason: '일치하는 과거 대화 없음' };
     // Retrieval favors recall; automatic injection has a separate strict gate.
-    const eligible = ranked.filter(hit => hit.matched.length >= 2 && hit.strong.length >= 1 && hit.score >= 2.5);
+    const outgoing = String(options.anchorText ?? query).normalize('NFKC').toLowerCase();
+    const anchors = anchorWords(outgoing);
+    const recallCue = /(기억|전에|예전|지난|그때|처음|언제|어디|뭐야|뭐였|무슨|누구|어떻게|왜)/.test(outgoing);
+    const rareEntity = anchors.filter(anchor => {
+      if (!ix.entities.has(anchor)) return false;
+      const count = ix.docs.filter(doc => doc.tf.has(anchor) || doc.koreanWords.some(word => word.startsWith(anchor))).length;
+      return count > 0 && count <= Math.max(2, Math.floor(ix.docs.length * 0.2));
+    });
+    const eligible = !recallCue || ix.docs.length < 25 || anchors.length < 2 || !rareEntity.length ? [] : ranked.filter(hit => {
+      const fromOutgoing = anchors.filter(anchor => hit.matched.includes(anchor));
+      const content = fromOutgoing.filter(anchor => !ix.entities.has(anchor) && anchor.length >= 3 && !/(기억|전에|예전|지난|그때|처음|언제|어디|뭐야|뭐였|무슨|누구|어떻게|왜)/.test(anchor));
+      return fromOutgoing.some(anchor => rareEntity.includes(anchor)) && content.length >= 2 && hit.score >= 2.5;
+    });
     const selected = [];
     const sourceIds = new Set();
     let used = 0;
@@ -124,7 +163,7 @@ const CrackMemoryEngine = (() => {
       sourceIds.add(hit.messageId);
       used += line.length;
     }
-    return { ranked, selected, reason: selected.length ? '' : '정확한 단서 부족 또는 길이 초과' };
+    return { ranked, selected, reason: selected.length ? '' : '과거 회상 신호·명시된 인물과 사건 단서 부족 또는 길이 초과' };
   }
 
   function compose(original, selected) {
@@ -153,7 +192,7 @@ const CrackMemoryEngine = (() => {
     } catch { return null; }
   }
 
-  return { stripOwnBlock, terms, unitsFromMessages, index, search, choose, compose, carrier, parseFrame, START, END };
+  return { stripOwnBlock, searchText, terms, unitsFromMessages, index, search, choose, compose, carrier, parseFrame, START, END };
 })();
 
 (function () {
@@ -247,8 +286,8 @@ const CrackMemoryEngine = (() => {
     throw Error('서버에서 주입 반영을 확인하지 못했습니다.');
   }
   function queryFor(messages, outgoing = '') {
-    const recent = messages.slice(-4).map(m => E.stripOwnBlock(m.text)).join('\n');
-    return `${recent.slice(-2500)}\n${outgoing}`.slice(-4000);
+    const current = outgoing || messages.filter(m => m.role === 'user').at(-1)?.text || '';
+    return E.searchText(current).slice(-4000);
   }
   async function remember(id) {
     const head = await history(id);
@@ -286,7 +325,8 @@ const CrackMemoryEngine = (() => {
   async function preview(outgoing = '') {
     const id = chatId(); if (!id) throw Error('크랙 채팅방에서만 사용할 수 있습니다.');
     const memory = await remember(id);
-    const result = E.choose(memory.ix, queryFor(memory.all, outgoing), { maxOrder: Math.max(0, memory.all.length - 6) });
+    const prompt = outgoing || memory.all.filter(m => m.role === 'user').at(-1)?.text || '';
+    const result = E.choose(memory.ix, queryFor(memory.all, outgoing), { maxOrder: Math.max(0, memory.all.length - 20), anchorText: E.searchText(prompt) });
     renderReport({ ...result, units: memory.units.length });
     return { id, memory, result };
   }

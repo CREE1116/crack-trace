@@ -11,6 +11,14 @@ test('Korean inflections share character bigrams', () => {
   assert.ok(engine.terms('은빛열쇠').includes('은빛'));
 });
 
+test('repeated INFO panel and image URLs do not become memories', () => {
+  const text = '서재에서 열쇠를 찾았다.\n```INFO\n희귀한상태표 낡은관계표\n```\n![](https://example.invalid/image.png)';
+  const clean = engine.searchText(text);
+  assert.ok(clean.includes('서재에서 열쇠를 찾았다'));
+  assert.ok(!clean.includes('희귀한상태표'));
+  assert.ok(!clean.includes('example.invalid'));
+});
+
 test('old messages are retrievable with source and recent messages excluded', () => {
   const messages = [
     { id: '1', role: 'user', text: '은빛열쇠를 서재의 상자에 숨겼다.' },
@@ -25,7 +33,16 @@ test('old messages are retrievable with source and recent messages excluded', ()
   assert.equal(ranked[0].messageId, '1');
   assert.equal(ranked[0].role, 'user');
   assert.equal(ranked.some(x => x.messageId === '5'), false);
-  assert.equal(engine.choose(ix, '서재 은빛열쇠', { maxOrder: 4 }).selected[0].messageId, '1');
+  assert.equal(engine.choose(ix, '서재 은빛열쇠', { maxOrder: 4 }).selected.length, 0); // Too little history for automatic injection.
+});
+
+test('explicit recall with named speaker and two event anchors selects old evidence', () => {
+  const messages = [{ id: '1', role: 'assistant', text: '💬 미나 | 은빛열쇠를 서재 상자에 숨겼어.' }];
+  for (let i = 2; i <= 32; i++) messages.push({ id: String(i), role: i % 2 ? 'assistant' : 'user', text: `다른 장소의 일상 장면 ${i}` });
+  const ix = engine.index(engine.unitsFromMessages(messages, 'room'));
+  const query = '미나가 전에 은빛열쇠를 어디에 숨겼어?';
+  const result = engine.choose(ix, query, { maxOrder: 10, anchorText: query });
+  assert.equal(result.selected[0]?.messageId, '1');
 });
 
 test('weak generic query does not inject and own block is removed on rerun', () => {

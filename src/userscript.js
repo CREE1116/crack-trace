@@ -89,8 +89,8 @@
     throw Error('서버에서 주입 반영을 확인하지 못했습니다.');
   }
   function queryFor(messages, outgoing = '') {
-    const recent = messages.slice(-4).map(m => E.stripOwnBlock(m.text)).join('\n');
-    return `${recent.slice(-2500)}\n${outgoing}`.slice(-4000);
+    const current = outgoing || messages.filter(m => m.role === 'user').at(-1)?.text || '';
+    return E.searchText(current).slice(-4000);
   }
   async function remember(id) {
     const head = await history(id);
@@ -128,7 +128,8 @@
   async function preview(outgoing = '') {
     const id = chatId(); if (!id) throw Error('크랙 채팅방에서만 사용할 수 있습니다.');
     const memory = await remember(id);
-    const result = E.choose(memory.ix, queryFor(memory.all, outgoing), { maxOrder: Math.max(0, memory.all.length - 6) });
+    const prompt = outgoing || memory.all.filter(m => m.role === 'user').at(-1)?.text || '';
+    const result = E.choose(memory.ix, queryFor(memory.all, outgoing), { maxOrder: Math.max(0, memory.all.length - 20), anchorText: E.searchText(prompt) });
     renderReport({ ...result, units: memory.units.length });
     return { id, memory, result };
   }
