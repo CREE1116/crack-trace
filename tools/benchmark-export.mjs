@@ -21,11 +21,14 @@ const rows = cases.map(item => {
   const result = engine.choose(ix, item.query, { maxOrder, anchorText: item.query });
   const isEvidence = hit => item.evidence.some(ref => hit.messageId === `export-${String(ref.message).padStart(4, '0')}` && hit.text.includes(ref.contains));
   const index = result.ranked.findIndex(isEvidence);
-  return { id: item.id, evidenceRank: index + 1, top5: index >= 0 && index < 5, autoSelected: result.selected.length > 0, autoCorrect: result.selected.some(isEvidence) };
+  const messageHits = engine.groupByMessage(result.ranked);
+  const messageIndex = messageHits.findIndex(hit => item.evidence.some(ref => hit.messageId === `export-${String(ref.message).padStart(4, '0')}` && engine.searchText(messages[ref.message - 1]?.text).includes(ref.contains)));
+  return { id: item.id, evidenceRank: index + 1, top5Passages: index >= 0 && index < 5, messageRank: messageIndex + 1, top5Messages: messageIndex >= 0 && messageIndex < 5, autoSelected: result.selected.length > 0, autoCorrect: result.selected.some(isEvidence) };
 });
 process.stdout.write(JSON.stringify({
   cases: rows.length,
-  answerInTop5: rows.filter(row => row.top5).length,
+  answerInTop5Passages: rows.filter(row => row.top5Passages).length,
+  answerInTop5Messages: rows.filter(row => row.top5Messages).length,
   autoSelected: rows.filter(row => row.autoSelected).length,
   autoCorrect: rows.filter(row => row.autoCorrect).length,
   rows,

@@ -17,6 +17,12 @@ test('repeated INFO panel and image URLs do not become memories', () => {
   assert.ok(clean.includes('서재에서 열쇠를 찾았다'));
   assert.ok(!clean.includes('희귀한상태표'));
   assert.ok(!clean.includes('example.invalid'));
+  assert.equal(engine.searchText('[💼] 장비\n[🤝 주요 관계 인물]\n[📝 기록]'), '');
+});
+
+test('search display groups repeated passages from one message', () => {
+  const hits = [{ messageId: '1' }, { messageId: '1' }, { messageId: '2' }];
+  assert.deepEqual(Array.from(engine.groupByMessage(hits), hit => hit.messageId), ['1', '2']);
 });
 
 test('old messages are retrievable with source and recent messages excluded', () => {

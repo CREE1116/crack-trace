@@ -12,7 +12,10 @@ const CrackMemoryEngine = (() => {
   }
 
   function searchText(value) {
-    return stripOwnBlock(value)
+    const raw = stripOwnBlock(value);
+    // Some exports contain a detached status panel as a whole message.
+    if (raw.includes('[💼]') && raw.includes('[🤝 주요 관계 인물]') && raw.includes('[📝 기록]')) return '';
+    return raw
       .replace(/```INFO\b[\s\S]*?```/gi, ' ')
       .replace(/!\[[^\]]*\]\(https?:\/\/[^)]*\)/g, ' ')
       .replace(/https?:\/\/\S+/g, ' ')
@@ -116,6 +119,15 @@ const CrackMemoryEngine = (() => {
     return ranked.sort((a, b) => b.score - a.score || a.order - b.order || a.id.localeCompare(b.id));
   }
 
+  function groupByMessage(ranked) {
+    const seen = new Set();
+    return ranked.filter(hit => {
+      if (seen.has(hit.messageId)) return false;
+      seen.add(hit.messageId);
+      return true;
+    });
+  }
+
   function choose(ix, query, options = {}) {
     const ranked = search(ix, query, options);
     if (!ranked.length) return { ranked, selected: [], reason: '일치하는 과거 대화 없음' };
@@ -175,5 +187,5 @@ const CrackMemoryEngine = (() => {
     } catch { return null; }
   }
 
-  return { stripOwnBlock, searchText, terms, unitsFromMessages, index, search, choose, compose, carrier, parseFrame, START, END };
+  return { stripOwnBlock, searchText, terms, unitsFromMessages, index, search, groupByMessage, choose, compose, carrier, parseFrame, START, END };
 })();

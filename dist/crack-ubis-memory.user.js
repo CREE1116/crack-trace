@@ -29,7 +29,10 @@ const CrackMemoryEngine = (() => {
   }
 
   function searchText(value) {
-    return stripOwnBlock(value)
+    const raw = stripOwnBlock(value);
+    // Some exports contain a detached status panel as a whole message.
+    if (raw.includes('[💼]') && raw.includes('[🤝 주요 관계 인물]') && raw.includes('[📝 기록]')) return '';
+    return raw
       .replace(/```INFO\b[\s\S]*?```/gi, ' ')
       .replace(/!\[[^\]]*\]\(https?:\/\/[^)]*\)/g, ' ')
       .replace(/https?:\/\/\S+/g, ' ')
@@ -133,6 +136,15 @@ const CrackMemoryEngine = (() => {
     return ranked.sort((a, b) => b.score - a.score || a.order - b.order || a.id.localeCompare(b.id));
   }
 
+  function groupByMessage(ranked) {
+    const seen = new Set();
+    return ranked.filter(hit => {
+      if (seen.has(hit.messageId)) return false;
+      seen.add(hit.messageId);
+      return true;
+    });
+  }
+
   function choose(ix, query, options = {}) {
     const ranked = search(ix, query, options);
     if (!ranked.length) return { ranked, selected: [], reason: '일치하는 과거 대화 없음' };
@@ -192,7 +204,7 @@ const CrackMemoryEngine = (() => {
     } catch { return null; }
   }
 
-  return { stripOwnBlock, searchText, terms, unitsFromMessages, index, search, choose, compose, carrier, parseFrame, START, END };
+  return { stripOwnBlock, searchText, terms, unitsFromMessages, index, search, groupByMessage, choose, compose, carrier, parseFrame, START, END };
 })();
 
 (function () {
@@ -312,14 +324,20 @@ const CrackMemoryEngine = (() => {
     const intro = document.createElement('p');
     intro.textContent = `${report.units}개 원문 구간 · 자동 기준 통과 ${report.selected.length}개${report.reason ? ` · ${report.reason}` : ''}`;
     node.append(intro);
-    for (const hit of report.ranked.slice(0, 5)) {
+    const byId = new Map((report.messages || []).map(message => [String(message.id), message]));
+    for (const hit of E.groupByMessage(report.ranked).slice(0, 5)) {
       const item = document.createElement('article');
       const label = document.createElement('b');
-      label.textContent = `${hit.role === 'user' ? '사용자' : 'AI'} · ${hit.messageId} · 점수 ${hit.score.toFixed(2)}${report.selected.some(x => x.id === hit.id) ? ' · 자동 후보' : ''}`;
+      label.textContent = `${hit.role === 'user' ? '사용자' : 'AI'} · ${hit.messageId} · 점수 ${hit.score.toFixed(2)}${report.selected.some(x => x.messageId === hit.messageId) ? ' · 자동 후보' : ''}`;
       const reason = document.createElement('small');
       reason.textContent = `일치: ${hit.matched.join(', ')} / 강한 단서: ${hit.strong.join(', ') || '없음'}`;
       const body = document.createElement('p'); body.textContent = hit.text;
-      item.append(label, reason, body); node.append(item);
+      const full = E.searchText(byId.get(String(hit.messageId))?.text || '');
+      const details = document.createElement('details');
+      const summary = document.createElement('summary'); summary.textContent = '이 메시지 전체 보기';
+      const fullBody = document.createElement('p'); fullBody.textContent = full;
+      details.append(summary, fullBody);
+      item.append(label, reason, body, details); node.append(item);
     }
   }
   async function preview(outgoing = '') {
@@ -327,7 +345,7 @@ const CrackMemoryEngine = (() => {
     const memory = await remember(id);
     const prompt = outgoing || memory.all.filter(m => m.role === 'user').at(-1)?.text || '';
     const result = E.choose(memory.ix, queryFor(memory.all, outgoing), { maxOrder: Math.max(0, memory.all.length - 20), anchorText: E.searchText(prompt) });
-    renderReport({ ...result, units: memory.units.length });
+    renderReport({ ...result, units: memory.units.length, messages: memory.all });
     return { id, memory, result };
   }
   async function prepare(id, outgoing) {
@@ -405,7 +423,7 @@ const CrackMemoryEngine = (() => {
     style.textContent = '#cum-open{position:fixed;right:12px;bottom:12px;z-index:2147483644;padding:9px 12px;border-radius:8px;background:#243a5b;color:white;border:0}#cum-panel{position:fixed;right:12px;bottom:55px;z-index:2147483644;width:min(430px,calc(100vw - 24px));max-height:75vh;overflow:auto;background:#17202e;color:white;padding:13px;border:1px solid #70829b;border-radius:10px;font:13px/1.45 system-ui}#cum-panel[hidden]{display:none}#cum-panel button{margin:4px;padding:6px;color:white;background:#345273;border:1px solid #7189a0;border-radius:5px}#cum-panel article{border-top:1px solid #617187;padding:8px 0}#cum-panel article p{white-space:pre-wrap;overflow-wrap:anywhere}#cum-panel small{display:block;color:#bfd0df}';
     const open = document.createElement('button'); open.id = 'cum-open'; open.textContent = '기억 검색';
     const panel = document.createElement('aside'); panel.id = 'cum-panel'; panel.hidden = true;
-    panel.innerHTML = '<b>Crack UBIS Memory · 프로토타입</b><p>외부 AI 없이 대화 원문을 검색합니다. 자동 적용은 이 방에서만 켜집니다.</p><label><input id="cum-auto" type="checkbox"> 다음 전송부터 자동 적용</label><p><button id="cum-preview">현재 장면 후보 보기</button><button id="cum-copy">보류된 입력 복사</button><button id="cum-close">닫기</button></p><output id="cum-status"></output><div id="cum-results"></div>';
+    panel.innerHTML = '<b>Crack UBIS Memory · 프로토타입</b><p>외부 AI 없이 대화 원문을 검색합니다. 자동 적용은 아직 회상 시험에서 정답을 넣지 못한 실험 기능입니다.</p><label><input id="cum-auto" type="checkbox"> 다음 전송부터 자동 적용(실험)</label><p><button id="cum-preview">현재 장면 후보 보기</button><button id="cum-copy">보류된 입력 복사</button><button id="cum-close">닫기</button></p><output id="cum-status"></output><div id="cum-results"></div>';
     open.onclick = () => { panel.hidden = !panel.hidden; const id = chatId(); panel.querySelector('#cum-auto').checked = id ? enabled(id) : false; };
     panel.querySelector('#cum-close').onclick = () => { panel.hidden = true; };
     panel.querySelector('#cum-auto').onchange = async event => {
