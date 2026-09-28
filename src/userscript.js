@@ -12,7 +12,7 @@
     return (location.pathname.match(/\/(?:stories\/[^/]+\/episodes|characters\/[^/]+\/chats|u\/[^/]+\/c)\/([^/?#]+)/) || [])[1] || '';
   }
   function key(id, suffix) { return `crack-ubis-memory:${id}:${suffix}`; }
-  function enabled(id) { return !!GM_getValue(key(id, 'auto'), false); }
+  function enabled(id) { return !!GM_getValue(key(id, 'input-auto'), false); }
   function messageId(m) { return String(m?._id || m?.id || ''); }
   function messageText(m) { return String(m?.content ?? m?.message ?? ''); }
   function role(m) { return String(m?.role || m?.senderRole || '').toLowerCase(); }
@@ -113,13 +113,19 @@
     if (!node) return;
     node.replaceChildren();
     const intro = document.createElement('p');
-    intro.textContent = `${report.units}개 원문 구간 · 자동 기준 통과 ${report.selected.length}개${report.reason ? ` · ${report.reason}` : ''}`;
+    intro.textContent = `${report.units}개 원문 구간 · 이번 입력에 넣을 후보 ${report.selected.length}개${report.reason ? ` · ${report.reason}` : ''}`;
     node.append(intro);
+    if (report.selected.length) {
+      const prepared = document.createElement('details');
+      const summary = document.createElement('summary'); summary.textContent = '전송될 문맥과 원래 입력 보기';
+      const text = document.createElement('p'); text.textContent = E.composeUser(report.prompt, report.selected);
+      prepared.append(summary, text); node.append(prepared);
+    }
     const byId = new Map((report.messages || []).map(message => [String(message.id), message]));
     for (const hit of E.groupByMessage(report.ranked).slice(0, 5)) {
       const item = document.createElement('article');
       const label = document.createElement('b');
-      label.textContent = `${hit.role === 'user' ? '사용자' : 'AI'} · ${hit.messageId} · 점수 ${hit.score.toFixed(2)}${report.selected.some(x => x.messageId === hit.messageId) ? ' · 자동 후보' : ''}`;
+      label.textContent = `${hit.role === 'user' ? '사용자' : 'AI'} · ${hit.messageId} · 점수 ${hit.score.toFixed(2)}${report.selected.some(x => x.messageId === hit.messageId) ? ' · 입력 후보' : ''}`;
       const reason = document.createElement('small');
       reason.textContent = `일치: ${hit.matched.join(', ')} / 강한 단서: ${hit.strong.join(', ') || '없음'}`;
       const body = document.createElement('p'); body.textContent = hit.text;
@@ -134,50 +140,26 @@
   async function preview(outgoing = '') {
     const id = chatId(); if (!id) throw Error('크랙 채팅방에서만 사용할 수 있습니다.');
     const memory = await remember(id);
-    const prompt = outgoing || memory.all.filter(m => m.role === 'user').at(-1)?.text || '';
-    const result = E.choose(memory.ix, queryFor(memory.all, outgoing), { maxOrder: Math.max(0, memory.all.length - 20), anchorText: E.searchText(prompt) });
-    renderReport({ ...result, units: memory.units.length, messages: memory.all });
+    const prompt = E.stripOwnBlock(outgoing || memory.all.filter(m => m.role === 'user').at(-1)?.text || '');
+    const result = E.contextFor(memory.ix, memory.all, queryFor(memory.all, outgoing), {
+      maxOrder: Math.max(0, memory.all.length - 20),
+      budget: E.userContextBudget(prompt),
+    });
+    renderReport({ ...result, units: memory.units.length, messages: memory.all, prompt });
     return { id, memory, result };
   }
-  async function prepare(id, outgoing) {
-    const { memory, result } = await preview(outgoing);
-    let target;
-    try { target = E.carrier(memory.head); }
-    catch (error) {
-      if (error.message !== '주입할 이전 AI 답변이 없습니다.') throw error;
-      reportStatus('이전 AI 답변이 없어 이번 턴은 기억 없이 전송합니다.');
-      return false;
+  async function prepareOutgoing(id, outgoing, raw) {
+    if (GM_getValue(key(id, 'carrier'), '') || GM_getValue(key(id, 'cleanup'), '')) await clearCarrier(id);
+    const { result } = await preview(outgoing);
+    const content = E.composeUser(outgoing, result.selected);
+    if (content === outgoing) {
+      reportStatus('이번 입력에는 과거 대화 후보를 넣지 않았습니다.');
+      return raw;
     }
-    const frontier = JSON.stringify(memory.head.slice(-3).map(m => [m.id, E.stripOwnBlock(m.text)]));
-    const live = await getMessage(id, target.id);
-    if (live.text.includes('RP_CONTEXT_MANAGER_START')) throw Error('위시 주입이 켜져 있어 자동 주입을 중단했습니다.');
-    const next = E.compose(live.text, result.selected);
-    if (next.length > 36000) throw Error('주입 대상 메시지가 너무 깁니다.');
-    const previousId = GM_getValue(key(id, 'carrier'), '');
-    const pendingCleanup = GM_getValue(key(id, 'cleanup'), '');
-    if (pendingCleanup && pendingCleanup !== target.id) {
-      const old = await getMessage(id, pendingCleanup);
-      const clean = E.stripOwnBlock(old.text);
-      if (clean !== old.text) await patchVerified(id, pendingCleanup, old.text, clean);
-      GM_setValue(key(id, 'cleanup'), '');
-    }
-    if (next !== live.text) await patchVerified(id, target.id, live.text, next);
-    if (result.selected.length) GM_setValue(key(id, 'carrier'), target.id);
-    if (previousId && previousId !== target.id) {
-      GM_setValue(key(id, 'cleanup'), previousId);
-      const old = await getMessage(id, previousId);
-      const clean = E.stripOwnBlock(old.text);
-      if (clean !== old.text) await patchVerified(id, previousId, old.text, clean);
-      GM_setValue(key(id, 'cleanup'), '');
-    }
-    GM_setValue(key(id, 'carrier'), result.selected.length ? target.id : '');
-    const currentHead = await history(id);
-    const currentFrontier = JSON.stringify(currentHead.slice(-3).map(m => [m.id, E.stripOwnBlock(m.text)]));
-    if (currentFrontier !== frontier || E.carrier(currentHead).id !== target.id) {
-      throw Error('전송 준비 중 대화가 바뀌었습니다.');
-    }
-    reportStatus(result.selected.length ? `${result.selected.length}개 과거 구간 적용 확인` : '이번 턴에 적용한 과거 구간 없음');
-    return true;
+    const rewritten = E.replaceFrameMessage(raw, content);
+    if (!rewritten) throw Error('전송 형식이 달라 입력을 안전하게 수정할 수 없습니다.');
+    reportStatus(`${result.selected.length}개 과거 메시지 발췌를 입력 앞에 추가했습니다.`);
+    return rewritten;
   }
   async function clearCarrier(id) {
     const ids = [...new Set([GM_getValue(key(id, 'carrier'), ''), GM_getValue(key(id, 'cleanup'), '')].filter(Boolean))];
@@ -192,15 +174,15 @@
   const nativeSend = page.WebSocket.prototype.send;
   page.WebSocket.prototype.send = function (raw) {
     const frame = E.parseFrame(raw), id = chatId();
-    if (!frame || !id || String(frame.payload.chatId || '') !== id || !enabled(id)) return nativeSend.call(this, raw);
+    if (!frame || frame.kind !== 'send' || !id || String(frame.payload.chatId || '') !== id || !enabled(id)) return nativeSend.call(this, raw);
     if (busy) { reportStatus('이전 전송을 준비 중입니다.'); return; }
     busy = true;
     const socket = this;
     const outgoing = String(frame.payload.message ?? frame.payload.content ?? frame.payload.text ?? '');
     GM_setValue(key(id, 'unsent'), outgoing);
-    void prepare(id, outgoing).then(() => {
+    void prepareOutgoing(id, outgoing, raw).then(rewritten => {
       if (id !== chatId() || socket.readyState !== page.WebSocket.OPEN) throw Error('방 또는 연결이 바뀌었습니다.');
-      nativeSend.call(socket, raw);
+      nativeSend.call(socket, rewritten);
       GM_setValue(key(id, 'unsent'), '');
     }).catch(error => {
       reportStatus(`전송 보류: ${error.message} · 아래 복구 버튼으로 입력 복사 가능`);
@@ -214,7 +196,7 @@
     style.textContent = '#cum-open{position:fixed;right:12px;bottom:12px;z-index:2147483644;padding:9px 12px;border-radius:8px;background:#243a5b;color:white;border:0}#cum-panel{position:fixed;right:12px;bottom:55px;z-index:2147483644;width:min(430px,calc(100vw - 24px));max-height:75vh;overflow:auto;background:#17202e;color:white;padding:13px;border:1px solid #70829b;border-radius:10px;font:13px/1.45 system-ui}#cum-panel[hidden]{display:none}#cum-panel button{margin:4px;padding:6px;color:white;background:#345273;border:1px solid #7189a0;border-radius:5px}#cum-panel article{border-top:1px solid #617187;padding:8px 0}#cum-panel article p{white-space:pre-wrap;overflow-wrap:anywhere}#cum-panel small{display:block;color:#bfd0df}';
     const open = document.createElement('button'); open.id = 'cum-open'; open.textContent = '기억 검색';
     const panel = document.createElement('aside'); panel.id = 'cum-panel'; panel.hidden = true;
-    panel.innerHTML = '<b>Crack UBIS Memory · 프로토타입</b><p>외부 AI 없이 대화 원문을 검색합니다. 자동 적용은 아직 회상 시험에서 정답을 넣지 못한 실험 기능입니다.</p><label><input id="cum-auto" type="checkbox"> 다음 전송부터 자동 적용(실험)</label><p><button id="cum-preview">현재 장면 후보 보기</button><button id="cum-copy">보류된 입력 복사</button><button id="cum-close">닫기</button></p><output id="cum-status"></output><div id="cum-results"></div>';
+    panel.innerHTML = '<b>Crack UBIS Memory · 프로토타입</b><p>과거 대화 발췌를 사용자 입력 앞에 최대 2,000자 안에서 넣습니다. 추가한 문장은 크랙 대화에도 저장됩니다. 재생성에는 적용하지 않습니다.</p><label><input id="cum-auto" type="checkbox"> 다음 전송부터 입력 앞에 붙이기(실험)</label><p><button id="cum-preview">현재 장면 후보 보기</button><button id="cum-copy">보류된 입력 복사</button><button id="cum-close">닫기</button></p><output id="cum-status"></output><div id="cum-results"></div>';
     open.onclick = () => { panel.hidden = !panel.hidden; const id = chatId(); panel.querySelector('#cum-auto').checked = id ? enabled(id) : false; };
     panel.querySelector('#cum-close').onclick = () => { panel.hidden = true; };
     panel.querySelector('#cum-auto').onchange = async event => {
@@ -222,7 +204,7 @@
       event.target.disabled = true;
       try {
         if (!event.target.checked) await clearCarrier(id);
-        GM_setValue(key(id, 'auto'), event.target.checked);
+        GM_setValue(key(id, 'input-auto'), event.target.checked);
         reportStatus(event.target.checked ? '이 방의 자동 적용을 켰습니다.' : '이 방의 자동 적용과 이전 주입을 해제했습니다.');
       } catch (error) {
         event.target.checked = enabled(id);

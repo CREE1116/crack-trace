@@ -23,13 +23,16 @@ const rows = cases.map(item => {
   const index = result.ranked.findIndex(isEvidence);
   const messageHits = engine.groupByMessage(result.ranked);
   const messageIndex = messageHits.findIndex(hit => item.evidence.some(ref => hit.messageId === `export-${String(ref.message).padStart(4, '0')}` && engine.searchText(messages[ref.message - 1]?.text).includes(ref.contains)));
-  return { id: item.id, evidenceRank: index + 1, top5Passages: index >= 0 && index < 5, messageRank: messageIndex + 1, top5Messages: messageIndex >= 0 && messageIndex < 5, autoSelected: result.selected.length > 0, autoCorrect: result.selected.some(isEvidence) };
+  const context = engine.contextFor(ix, messages, item.query, { maxOrder, budget: engine.userContextBudget(item.query) });
+  const contextHasAnswer = context.selected.some(isEvidence);
+  return { id: item.id, evidenceRank: index + 1, top5Passages: index >= 0 && index < 5, messageRank: messageIndex + 1, top5Messages: messageIndex >= 0 && messageIndex < 5, previousStrictSelected: result.selected.length > 0, previousStrictCorrect: result.selected.some(isEvidence), contextSources: context.selected.length, contextHasAnswer, composedChars: engine.composeUser(item.query, context.selected).length };
 });
 process.stdout.write(JSON.stringify({
   cases: rows.length,
   answerInTop5Passages: rows.filter(row => row.top5Passages).length,
   answerInTop5Messages: rows.filter(row => row.top5Messages).length,
-  autoSelected: rows.filter(row => row.autoSelected).length,
-  autoCorrect: rows.filter(row => row.autoCorrect).length,
+  previousStrictSelected: rows.filter(row => row.previousStrictSelected).length,
+  previousStrictCorrect: rows.filter(row => row.previousStrictCorrect).length,
+  contextHasAnswer: rows.filter(row => row.contextHasAnswer).length,
   rows,
 }, null, 2) + '\n');

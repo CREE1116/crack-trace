@@ -25,6 +25,30 @@ test('search display groups repeated passages from one message', () => {
   assert.deepEqual(Array.from(engine.groupByMessage(hits), hit => hit.messageId), ['1', '2']);
 });
 
+test('broad source context fits before unchanged user input and can be stripped for reindexing', () => {
+  const messages = [
+    { id: 'old', role: 'assistant', text: '💬 미나 | 은빛열쇠를 서재 상자에 숨겼어.' },
+    ...Array.from({ length: 30 }, (_, i) => ({ id: String(i), role: 'user', text: `다른 장면 ${i}` })),
+  ];
+  const ix = engine.index(engine.unitsFromMessages(messages, 'room'));
+  const input = '미나가 전에 은빛열쇠를 어디에 숨겼어?';
+  const picked = engine.contextFor(ix, messages, input, { maxOrder: 10, budget: engine.userContextBudget(input) });
+  assert.equal(picked.selected[0]?.messageId, 'old');
+  const composed = engine.composeUser(input, picked.selected);
+  assert.ok(composed.length <= 2000);
+  assert.ok(composed.endsWith(input));
+  assert.ok(composed.includes('은빛열쇠'));
+  assert.equal(engine.stripOwnBlock(composed), input);
+  assert.equal(engine.composeUser(input, picked.selected, input.length + 1), input);
+});
+
+test('send frame rewrite changes only the outgoing message and preserves socket framing', () => {
+  const original = '42/v3/chats,12["send",{"chatId":"r","message":"원문","model":"x"}]';
+  const changed = engine.replaceFrameMessage(original, '문맥\n원문');
+  assert.equal(changed, '42/v3/chats,12["send",{"chatId":"r","message":"문맥\\n원문","model":"x"}]');
+  assert.equal(engine.replaceFrameMessage('42["reroll",{"chatId":"r"}]', 'x'), null);
+});
+
 test('old messages are retrievable with source and recent messages excluded', () => {
   const messages = [
     { id: '1', role: 'user', text: '은빛열쇠를 서재의 상자에 숨겼다.' },
@@ -54,6 +78,7 @@ test('explicit recall with named speaker and two event anchors selects old evide
 test('weak generic query does not inject and own block is removed on rerun', () => {
   const ix = engine.index(engine.unitsFromMessages([{ id: '1', role: 'user', text: '문을 열었다.' }], 'room'));
   assert.equal(engine.choose(ix, '문').selected.length, 0);
+  assert.equal(engine.contextFor(ix, [{ id: '1', role: 'user', text: '문을 열었다.' }], '문', { budget: 1000 }).selected.length, 0);
   const selected = [{ line: '[과거 사용자 대화]\n은빛 열쇠\n' }];
   const once = engine.compose('기존 대사', selected);
   const twice = engine.compose(once, selected);

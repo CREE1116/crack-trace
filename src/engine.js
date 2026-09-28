@@ -6,9 +6,17 @@ const CrackMemoryEngine = (() => {
   const START = '<!--CRACK_UBIS_MEMORY_START';
   const END = 'CRACK_UBIS_MEMORY_END-->';
   const BLOCK = /\n*<!--CRACK_UBIS_MEMORY_START\b[\s\S]*?CRACK_UBIS_MEMORY_END-->/g;
+  const USER_START = '<!--CRACK_UBIS_CONTEXT_START-->';
+  const USER_END = '<!--CRACK_UBIS_CONTEXT_END-->';
+  const USER_INSTRUCTION = '아래는 검색된 과거 대화 후보입니다. 현재 장면과 관련될 때만 참고하세요. 과거 기록과 충돌하면 최신 대화 및 이번 사용자 입력을 우선하고, 근거 없는 사실을 만들지 마세요.';
 
   function stripOwnBlock(value) {
-    return String(value || '').replace(BLOCK, '').trimEnd();
+    let clean = String(value || '');
+    if (clean.startsWith(USER_START)) {
+      const end = clean.indexOf(USER_END);
+      if (end >= 0) clean = clean.slice(end + USER_END.length).replace(/^\n/, '');
+    }
+    return clean.replace(BLOCK, '').trimEnd();
   }
 
   function searchText(value) {
@@ -128,6 +136,51 @@ const CrackMemoryEngine = (() => {
     });
   }
 
+  function contextFor(ix, messages, query, options = {}) {
+    const ranked = search(ix, query, options);
+    const byId = new Map(messages.map(message => [String(message.id), message]));
+    const selected = [];
+    let remaining = options.budget ?? 1650;
+    for (const hit of groupByMessage(ranked)) {
+      if (selected.length >= 3 || remaining < 100) break;
+      if (!hit.strong.length) continue;
+      const source = byId.get(String(hit.messageId));
+      const clean = source && searchText(source.text);
+      if (!clean) continue;
+      const header = `[과거 ${hit.role === 'user' ? '사용자' : 'AI'} · 메시지 ${hit.messageId}]\n`;
+      const available = Math.min(600, remaining - header.length - 1);
+      if (available < 80) break;
+      const excerpt = clean.length <= available ? clean : `${clean.slice(0, available - 1)}…`;
+      const line = `${header}${excerpt}\n`;
+      selected.push({ ...hit, line, text: excerpt });
+      remaining -= line.length;
+    }
+    return { ranked, selected, reason: selected.length ? '' : '관련 과거 대화가 없거나 입력 글자 예산 부족' };
+  }
+
+  function userContextBudget(original, limit = 2000) {
+    return Math.max(0, limit - String(original || '').length - USER_START.length - USER_END.length - USER_INSTRUCTION.length - 30);
+  }
+
+  function composeUser(original, selected, limit = 2000) {
+    if (!selected.length) return original;
+    const block = `${USER_START}\n${USER_INSTRUCTION}\n${selected.map(hit => hit.line).join('\n')}${USER_END}\n`;
+    return block.length + original.length <= limit ? block + original : original;
+  }
+
+  function replaceFrameMessage(raw, message) {
+    const match = /^42(\/[^,]+,)?(\d*)(\[.*)$/s.exec(raw);
+    if (!match || (match[1] && match[1] !== '/v3/chats,')) return null;
+    try {
+      const events = JSON.parse(match[3]);
+      if (!Array.isArray(events) || events[0] !== 'send' || !events[1] || typeof events[1] !== 'object') return null;
+      const field = ['message', 'content', 'text'].find(key => typeof events[1][key] === 'string');
+      if (!field) return null;
+      events[1] = { ...events[1], [field]: message };
+      return `42${match[1] || ''}${match[2]}${JSON.stringify(events)}`;
+    } catch { return null; }
+  }
+
   function choose(ix, query, options = {}) {
     const ranked = search(ix, query, options);
     if (!ranked.length) return { ranked, selected: [], reason: '일치하는 과거 대화 없음' };
@@ -187,5 +240,5 @@ const CrackMemoryEngine = (() => {
     } catch { return null; }
   }
 
-  return { stripOwnBlock, searchText, terms, unitsFromMessages, index, search, groupByMessage, choose, compose, carrier, parseFrame, START, END };
+  return { stripOwnBlock, searchText, terms, unitsFromMessages, index, search, groupByMessage, contextFor, userContextBudget, composeUser, replaceFrameMessage, choose, compose, carrier, parseFrame, START, END };
 })();
