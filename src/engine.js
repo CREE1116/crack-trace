@@ -175,7 +175,7 @@ const CrackMemoryEngine = (() => {
       }
       if (!best) return false;
       if (selected.some(existing => existing.messageId === hit.messageId && existing.text.includes(best.excerpt.replace(/…$/, '')))) return false;
-      selected.push({ ...hit, line: best.line, text: best.excerpt });
+      selected.push({ ...hit, kind, line: best.line, text: best.excerpt });
       remaining -= best.line.length + separator;
       return true;
     }
