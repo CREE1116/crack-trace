@@ -10,7 +10,7 @@ const engineCode = readFileSync(new URL('../src/engine.js', import.meta.url), 'u
 const parserCode = readFileSync(new URL('../src/export.js', import.meta.url), 'utf8');
 const { engine, parser } = vm.runInNewContext(`${engineCode}\n${parserCode}\n({engine:CrackMemoryEngine,parser:CrackChatExport})`);
 const messages = parser.parse(readFileSync(input, 'utf8'));
-const stats = { messages: messages.length, userTurns: 0, evaluated: 0, withCandidates: 0, previousStrictSelected: 0, previousStrictUnits: 0, contextApplied: 0, contextSources: 0, contextChars: 0 };
+const stats = { messages: messages.length, userTurns: 0, evaluated: 0, withCandidates: 0, previousStrictSelected: 0, previousStrictUnits: 0, queriesExpanded: 0, contextApplied: 0, contextSources: 0, contextChars: 0 };
 const examples = [];
 for (let i = 0; i < messages.length; i++) {
   if (messages[i].role !== 'user') continue;
@@ -18,8 +18,9 @@ for (let i = 0; i < messages.length; i++) {
   if (i < 8) continue;
   const past = messages.slice(0, i);
   const units = engine.unitsFromMessages(past, 'export');
-  const query = engine.searchText(messages[i].text).slice(-4000);
   const ix = engine.index(units);
+  const query = engine.contextQuery(ix, past, messages[i].text);
+  if (query !== engine.searchText(messages[i].text).slice(-4000)) stats.queriesExpanded++;
   const result = engine.choose(ix, query, { maxOrder: i - 20, anchorText: engine.searchText(messages[i].text) });
   const context = engine.contextFor(ix, past, query, { maxOrder: i - 20, budget: engine.userContextBudget(messages[i].text) });
   const composed = engine.composeUser(messages[i].text, context.selected);

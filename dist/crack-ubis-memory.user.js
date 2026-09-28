@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Crack UBIS Memory (prototype)
 // @namespace    local.crack.ubis-memory
-// @version      0.2.0
+// @version      0.3.0
 // @description  Deterministic local retrieval of old Crack messages. No AI API.
 // @match        https://crack.wrtn.ai/stories/*/episodes/*
 // @match        https://crack.wrtn.ai/characters/*/chats/*
@@ -153,6 +153,22 @@ const CrackMemoryEngine = (() => {
     });
   }
 
+  function contextQuery(ix, messages, outgoing) {
+    const clean = searchText(outgoing).slice(-4000);
+    if (clean.length > 80 || anchorWords(clean).filter(word => word.length >= 3).length >= 3) return clean;
+    const recent = messages.filter(m => m.role === 'user' || m.role === 'assistant').slice(-4);
+    const lastUser = [...recent].reverse().find(m => m.role === 'user');
+    const lastAssistant = [...recent].reverse().find(m => m.role === 'assistant');
+    if (!lastUser || !lastAssistant) return clean;
+    const currentWords = new Set(anchorWords(clean));
+    const assistantWords = new Set(anchorWords(searchText(lastAssistant.text)));
+    const anchors = anchorWords(searchText(lastUser.text)).filter(word =>
+      word.length >= 3 && !currentWords.has(word) && assistantWords.has(word) && ix.df.has(word) &&
+      ix.df.get(word) <= Math.max(3, Math.floor(ix.docs.length * 0.2))
+    );
+    return anchors.length ? `${clean} ${anchors.slice(0, 3).join(' ')}` : clean;
+  }
+
   function contextFor(ix, messages, query, options = {}) {
     const ranked = search(ix, query, options);
     const byId = new Map(messages.map(message => [String(message.id), message]));
@@ -257,7 +273,7 @@ const CrackMemoryEngine = (() => {
     } catch { return null; }
   }
 
-  return { stripOwnBlock, searchText, terms, unitsFromMessages, index, search, groupByMessage, contextFor, userContextBudget, composeUser, replaceFrameMessage, choose, compose, carrier, parseFrame, START, END };
+  return { stripOwnBlock, searchText, terms, unitsFromMessages, index, search, groupByMessage, contextQuery, contextFor, userContextBudget, composeUser, replaceFrameMessage, choose, compose, carrier, parseFrame, START, END };
 })();
 
 (function () {
@@ -350,10 +366,6 @@ const CrackMemoryEngine = (() => {
     }
     throw Error('서버에서 주입 반영을 확인하지 못했습니다.');
   }
-  function queryFor(messages, outgoing = '') {
-    const current = outgoing || messages.filter(m => m.role === 'user').at(-1)?.text || '';
-    return E.searchText(current).slice(-4000);
-  }
   async function remember(id) {
     const head = await history(id);
     const marker = JSON.stringify(head.slice(-6).map(m => [m.id, E.stripOwnBlock(m.text)]));
@@ -403,7 +415,7 @@ const CrackMemoryEngine = (() => {
     const id = chatId(); if (!id) throw Error('크랙 채팅방에서만 사용할 수 있습니다.');
     const memory = await remember(id);
     const prompt = E.stripOwnBlock(outgoing || memory.all.filter(m => m.role === 'user').at(-1)?.text || '');
-    const result = E.contextFor(memory.ix, memory.all, queryFor(memory.all, outgoing), {
+    const result = E.contextFor(memory.ix, memory.all, E.contextQuery(memory.ix, memory.all, outgoing || prompt), {
       maxOrder: Math.max(0, memory.all.length - 20),
       budget: E.userContextBudget(prompt),
     });

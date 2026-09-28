@@ -88,10 +88,6 @@
     }
     throw Error('서버에서 주입 반영을 확인하지 못했습니다.');
   }
-  function queryFor(messages, outgoing = '') {
-    const current = outgoing || messages.filter(m => m.role === 'user').at(-1)?.text || '';
-    return E.searchText(current).slice(-4000);
-  }
   async function remember(id) {
     const head = await history(id);
     const marker = JSON.stringify(head.slice(-6).map(m => [m.id, E.stripOwnBlock(m.text)]));
@@ -141,7 +137,7 @@
     const id = chatId(); if (!id) throw Error('크랙 채팅방에서만 사용할 수 있습니다.');
     const memory = await remember(id);
     const prompt = E.stripOwnBlock(outgoing || memory.all.filter(m => m.role === 'user').at(-1)?.text || '');
-    const result = E.contextFor(memory.ix, memory.all, queryFor(memory.all, outgoing), {
+    const result = E.contextFor(memory.ix, memory.all, E.contextQuery(memory.ix, memory.all, outgoing || prompt), {
       maxOrder: Math.max(0, memory.all.length - 20),
       budget: E.userContextBudget(prompt),
     });

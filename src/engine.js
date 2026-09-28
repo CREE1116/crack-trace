@@ -136,6 +136,22 @@ const CrackMemoryEngine = (() => {
     });
   }
 
+  function contextQuery(ix, messages, outgoing) {
+    const clean = searchText(outgoing).slice(-4000);
+    if (clean.length > 80 || anchorWords(clean).filter(word => word.length >= 3).length >= 3) return clean;
+    const recent = messages.filter(m => m.role === 'user' || m.role === 'assistant').slice(-4);
+    const lastUser = [...recent].reverse().find(m => m.role === 'user');
+    const lastAssistant = [...recent].reverse().find(m => m.role === 'assistant');
+    if (!lastUser || !lastAssistant) return clean;
+    const currentWords = new Set(anchorWords(clean));
+    const assistantWords = new Set(anchorWords(searchText(lastAssistant.text)));
+    const anchors = anchorWords(searchText(lastUser.text)).filter(word =>
+      word.length >= 3 && !currentWords.has(word) && assistantWords.has(word) && ix.df.has(word) &&
+      ix.df.get(word) <= Math.max(3, Math.floor(ix.docs.length * 0.2))
+    );
+    return anchors.length ? `${clean} ${anchors.slice(0, 3).join(' ')}` : clean;
+  }
+
   function contextFor(ix, messages, query, options = {}) {
     const ranked = search(ix, query, options);
     const byId = new Map(messages.map(message => [String(message.id), message]));
@@ -240,5 +256,5 @@ const CrackMemoryEngine = (() => {
     } catch { return null; }
   }
 
-  return { stripOwnBlock, searchText, terms, unitsFromMessages, index, search, groupByMessage, contextFor, userContextBudget, composeUser, replaceFrameMessage, choose, compose, carrier, parseFrame, START, END };
+  return { stripOwnBlock, searchText, terms, unitsFromMessages, index, search, groupByMessage, contextQuery, contextFor, userContextBudget, composeUser, replaceFrameMessage, choose, compose, carrier, parseFrame, START, END };
 })();

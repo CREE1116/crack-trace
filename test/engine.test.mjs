@@ -42,6 +42,22 @@ test('broad source context fits before unchanged user input and can be stripped 
   assert.equal(engine.composeUser(input, picked.selected, input.length + 1), input);
 });
 
+test('short follow-up borrows only shared rare topic words from the latest exchange', () => {
+  const messages = [
+    { id: 'old', role: 'assistant', text: '은빛열쇠를 서재 상자에 숨겼다.' },
+    ...Array.from({ length: 30 }, (_, i) => ({ id: String(i), role: 'user', text: `다른 장면 ${i}` })),
+    { id: 'recent-user', role: 'user', text: '은빛열쇠가 아직 있어?' },
+    { id: 'recent-ai', role: 'assistant', text: '은빛열쇠는 아직 있어.' },
+  ];
+  const ix = engine.index(engine.unitsFromMessages(messages, 'room'));
+  const query = engine.contextQuery(ix, messages, '그건 어디 있어?');
+  assert.ok(query.includes('은빛열쇠'));
+  const result = engine.contextFor(ix, messages, query, { maxOrder: messages.length - 20, budget: engine.userContextBudget('그건 어디 있어?') });
+  assert.equal(result.selected[0]?.messageId, 'old');
+  assert.equal(engine.contextQuery(ix, messages, '은빛열쇠를 누가 서재 상자에 숨겼어?'), '은빛열쇠를 누가 서재 상자에 숨겼어?');
+  assert.equal(engine.contextQuery(ix, messages, '그건 어디 있어?'.repeat(10)), '그건 어디 있어?'.repeat(10));
+});
+
 test('send frame rewrite changes only the outgoing message and preserves socket framing', () => {
   const original = '42/v3/chats,12["send",{"chatId":"r","message":"원문","model":"x"}]';
   const changed = engine.replaceFrameMessage(original, '문맥\n원문');
