@@ -38,8 +38,24 @@ test('broad source context fits before unchanged user input and can be stripped 
   assert.ok(composed.length <= 2000);
   assert.ok(composed.endsWith(input));
   assert.ok(composed.includes('은빛열쇠'));
+  const cache = JSON.parse(composed.match(/\{"memory_cache":\[[^\n]*\]\}/)?.[0] || '{}');
+  assert.equal(cache.memory_cache[0].message_id, 'old');
+  assert.equal(cache.memory_cache[0].kind, 'message_start');
+  assert.ok(composed.includes('RP 장면·대사·행동이 아니며'));
   assert.equal(engine.stripOwnBlock(composed), input);
   assert.equal(engine.composeUser(input, picked.selected, input.length + 1), input);
+});
+
+test('spare input budget adds matched units from beyond a long message opening', () => {
+  const messages = [{ id: 'old', role: 'assistant', text: `${'무관한 서론. '.repeat(100)}은빛열쇠는 "서재"에 있다.` }];
+  const ix = engine.index(engine.unitsFromMessages(messages, 'room'));
+  const input = '은빛열쇠는 어디 있어?';
+  const result = engine.contextFor(ix, messages, input, { budget: engine.userContextBudget(input) });
+  const composed = engine.composeUser(input, result.selected);
+  const cache = JSON.parse(composed.match(/\{"memory_cache":\[[^\n]*\]\}/)?.[0] || '{}');
+  assert.equal(cache.memory_cache[0].kind, 'message_start');
+  assert.ok(cache.memory_cache.some(unit => unit.kind === 'matched_unit' && unit.excerpt.includes('은빛열쇠는 "서재"')));
+  assert.ok(composed.length <= 2000);
 });
 
 test('short follow-up borrows only shared rare topic words from the latest exchange', () => {

@@ -114,7 +114,7 @@
     if (report.selected.length) {
       const prepared = document.createElement('details');
       const summary = document.createElement('summary'); summary.textContent = '전송될 문맥과 원래 입력 보기';
-      const text = document.createElement('p'); text.textContent = E.composeUser(report.prompt, report.selected);
+      const text = document.createElement('pre'); text.textContent = E.composeUser(report.prompt, report.selected);
       prepared.append(summary, text); node.append(prepared);
     }
     const byId = new Map((report.messages || []).map(message => [String(message.id), message]));
@@ -189,7 +189,7 @@
   function installUi() {
     if (document.getElementById('cum-open')) return;
     const style = document.createElement('style');
-    style.textContent = '#cum-open{position:fixed;right:12px;bottom:12px;z-index:2147483644;padding:9px 12px;border-radius:8px;background:#243a5b;color:white;border:0}#cum-panel{position:fixed;right:12px;bottom:55px;z-index:2147483644;width:min(430px,calc(100vw - 24px));max-height:75vh;overflow:auto;background:#17202e;color:white;padding:13px;border:1px solid #70829b;border-radius:10px;font:13px/1.45 system-ui}#cum-panel[hidden]{display:none}#cum-panel button{margin:4px;padding:6px;color:white;background:#345273;border:1px solid #7189a0;border-radius:5px}#cum-panel article{border-top:1px solid #617187;padding:8px 0}#cum-panel article p{white-space:pre-wrap;overflow-wrap:anywhere}#cum-panel small{display:block;color:#bfd0df}';
+    style.textContent = '#cum-open{position:fixed;right:12px;bottom:12px;z-index:2147483644;padding:9px 12px;border-radius:8px;background:#243a5b;color:white;border:0}#cum-panel{position:fixed;right:12px;bottom:55px;z-index:2147483644;width:min(430px,calc(100vw - 24px));max-height:75vh;overflow:auto;background:#17202e;color:white;padding:13px;border:1px solid #70829b;border-radius:10px;font:13px/1.45 system-ui}#cum-panel[hidden]{display:none}#cum-panel button{margin:4px;padding:6px;color:white;background:#345273;border:1px solid #7189a0;border-radius:5px}#cum-panel article{border-top:1px solid #617187;padding:8px 0}#cum-panel article p,#cum-panel pre{white-space:pre-wrap;overflow-wrap:anywhere}#cum-panel pre{font:12px/1.4 monospace}#cum-panel small{display:block;color:#bfd0df}';
     const open = document.createElement('button'); open.id = 'cum-open'; open.textContent = '기억 검색';
     const panel = document.createElement('aside'); panel.id = 'cum-panel'; panel.hidden = true;
     panel.innerHTML = '<b>Crack UBIS Memory · 프로토타입</b><p>과거 대화 발췌를 사용자 입력 앞에 최대 2,000자 안에서 넣습니다. 추가한 문장은 크랙 대화에도 저장됩니다. 재생성에는 적용하지 않습니다.</p><label><input id="cum-auto" type="checkbox"> 다음 전송부터 입력 앞에 붙이기(실험)</label><p><button id="cum-preview">현재 장면 후보 보기</button><button id="cum-copy">보류된 입력 복사</button><button id="cum-close">닫기</button></p><output id="cum-status"></output><div id="cum-results"></div>';
