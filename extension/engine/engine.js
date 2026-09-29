@@ -28,8 +28,13 @@ const CrackMatrixEngine = (() => {
   function memoryBody(title, content) {
     const body = cleanLine(content);
     const label = cleanLine(title);
-    // The fact already names its subject, so repeating the label only wastes budget.
-    return label && !body.includes(label) ? `${label}｜${body}` : body;
+    // The fact already names its subject, so repeating the label only wastes budget. A label is
+    // named when each of its words appears by its stem ("무릎 충격" in "무릎에 충격이") or, for a
+    // three-syllable Korean name, by the given name ("박하린" in "하린이").
+    const named = word => body.includes(word) || body.includes(word.slice(0, 2))
+      || (/^[가-힣]{3}$/.test(word) && body.includes(word.slice(1)));
+    const words = label.split(/\s+/).filter(Boolean);
+    return words.length && !words.every(named) ? `${label}｜${body}` : body;
   }
 
   function cacheLine(kind, title, content, turn, who = []) {
