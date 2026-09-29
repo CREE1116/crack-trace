@@ -236,6 +236,12 @@
           <button type="button" class="cm-dock-chip" id="cm-dock-lore" title="로어북 키워드·설정 관리">
             <span>📜</span><span id="cm-dock-lore-name">로어북</span>
           </button>
+          <button type="button" class="cm-dock-chip" id="cm-dock-find" aria-expanded="false" aria-controls="cm-find-panel" title="지난 대화에서 찾고 그 대화로 이동">
+            <span>🔎</span><span>찾기</span>
+          </button>
+          <button type="button" class="cm-dock-chip" id="cm-dock-memo" aria-expanded="false" aria-controls="cm-memo-panel" title="자주 쓰는 문구를 눌러 입력창에 넣기">
+            <span>🗒️</span><span>메모</span>
+          </button>
         </div>
         <div class="cm-dock-actions">
           <span id="cm-dock-counter" class="cm-dock-counter" hidden title="크랙 입력 한도 2,000자 중 내 입력과 붙는 기억의 글자수"></span>
@@ -262,15 +268,21 @@
       preview.hidden = true;
       preview.innerHTML = '<div class="cm-composer-preview-header"><strong>전송 프롬프트 미리보기</strong><span>현재 입력 · 직전 AI 응답 기준</span></div><textarea id="cm-composer-preview-text" readonly aria-label="실제 전송 프롬프트"></textarea><div id="cm-composer-preview-status" role="status"></div><div class="cm-composer-preview-footer"><span>유저노트는 별도로 전송됩니다.</span><button type="button" id="cm-composer-preview-copy">복사</button></div>';
       progress.insertAdjacentElement('afterend', preview);
+      preview.insertAdjacentElement('afterend', createMemoPanel());
+      preview.insertAdjacentElement('afterend', createFindPanel());
       updateAnalysisProgress();
 
       dock.querySelector('#cm-dock-memory').onclick = () => openMasterModal('deck');
       dock.querySelector('#cm-dock-usernote').onclick = () => openMasterModal('usernote');
       dock.querySelector('#cm-dock-lore').onclick = () => openMasterModal('lore');
       dock.querySelector('#cm-dock-btn-preview').onclick = () => {
-        preview.hidden = !preview.hidden;
-        dock.querySelector('#cm-dock-btn-preview').setAttribute('aria-expanded', String(!preview.hidden));
-        if (!preview.hidden) handleTyping(attachedEditor?.innerText || '');
+        if (toggleDockPanel('cm-composer-preview')) handleTyping(attachedEditor?.innerText || '');
+      };
+      dock.querySelector('#cm-dock-find').onclick = () => {
+        if (toggleDockPanel('cm-find-panel')) document.getElementById('cm-find-input')?.select();
+      };
+      dock.querySelector('#cm-dock-memo').onclick = () => {
+        if (toggleDockPanel('cm-memo-panel')) renderMemos();
       };
       dock.querySelector('#cm-dock-btn-summarize').onclick = triggerSummarization;
       preview.querySelector('#cm-composer-preview-copy').onclick = () => {
@@ -881,6 +893,319 @@
     box.onkeydown = event => { if (event.key === 'Escape') box.remove(); };
     document.body.append(box);
     close.focus();
+  }
+
+  // --- Panels above the input: prompt preview, 찾기, 메모. One is open at a time. ---
+  const DOCK_PANELS = { 'cm-composer-preview': 'cm-dock-btn-preview', 'cm-find-panel': 'cm-dock-find', 'cm-memo-panel': 'cm-dock-memo' };
+  function toggleDockPanel(panelId) {
+    const open = document.getElementById(panelId)?.hidden;
+    for (const [id, buttonId] of Object.entries(DOCK_PANELS)) {
+      const panel = document.getElementById(id);
+      if (!panel) continue;
+      panel.hidden = !(open && id === panelId);
+      document.getElementById(buttonId)?.setAttribute('aria-expanded', String(!panel.hidden));
+    }
+    return Boolean(open);
+  }
+  function closeDockPanelOnEscape(panel) {
+    panel.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      toggleDockPanel(panel.id);
+      attachedEditor?.focus();
+    });
+  }
+
+  // 찾기: the service worker searches the whole chat history (not just what Crack has loaded).
+  function createFindPanel() {
+    const panel = document.createElement('div');
+    panel.id = 'cm-find-panel';
+    panel.className = 'cm-composer-preview cm-dock-panel';
+    panel.hidden = true;
+    panel.innerHTML = `
+      <div class="cm-composer-preview-header">
+        <input type="search" id="cm-find-input" class="cm-find-input" placeholder="지난 대화에서 찾기 (예: 월광검, 8일차)" aria-label="지난 대화에서 찾기" autocomplete="off">
+        <span id="cm-find-count" role="status"></span>
+      </div>
+      <ol id="cm-find-results" class="cm-find-results"></ol>`;
+    const input = panel.querySelector('#cm-find-input');
+    const count = panel.querySelector('#cm-find-count');
+    const list = panel.querySelector('#cm-find-results');
+    let timer = 0;
+    let serial = 0;
+    const run = async () => {
+      const query = input.value.trim();
+      const mine = ++serial;
+      list.replaceChildren();
+      if (!query) { count.textContent = ''; return; }
+      count.textContent = '찾는 중…';
+      const res = await chrome.runtime.sendMessage({ type: 'SEARCH_TURNS', chatId: chatId(), query }).catch(error => ({ success: false, error: String(error.message || error) }));
+      if (mine !== serial) return;
+      if (!res?.success) { count.textContent = res?.error || '찾지 못했어요'; return; }
+      const close = res.results.filter(hit => !hit.exact).length;
+      count.textContent = res.total ? `${res.total}곳${res.total > res.results.length - close ? ` 중 ${res.results.length - close}곳 표시` : ''}${close ? ` · 비슷한 곳 ${close}` : ''}`
+        : close ? `그대로는 없음 · 비슷한 곳 ${close}` : '없음';
+      for (const hit of res.results) {
+        const item = document.createElement('li');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `cm-find-hit${hit.exact ? '' : ' close'}`;
+        const turn = document.createElement('span');
+        turn.className = 'cm-find-turn';
+        turn.textContent = `${hit.turn} ${hit.role === 'user' ? '나' : 'AI'}`;
+        const text = document.createElement('span');
+        text.className = 'cm-find-text';
+        const mark = document.createElement('mark');
+        mark.textContent = hit.match;
+        text.append(hit.before, ...(hit.match ? [mark] : []), hit.after);
+        button.append(turn, text);
+        button.title = `대화 ${hit.turn}(으)로 이동`;
+        button.onclick = () => jumpToTurn(hit.turn);
+        item.append(button);
+        list.append(item);
+      }
+    };
+    input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 250); });
+    input.addEventListener('keydown', event => { if (event.key === 'Enter') { clearTimeout(timer); run(); } });
+    closeDockPanelOnEscape(panel);
+    return panel;
+  }
+
+  // 메모: saved snippets for Crack's input. Shared by all chats unless marked for this chat.
+  // Three ways in: click, Alt+1…Alt+0 for the first ten, or a 대체어 typed and followed by a
+  // space (like iPhone text replacement). The text goes in exactly as written.
+  const MEMO_KEY = 'memos';
+  const MEMO_SLOTS = 10;
+  let memoCache = [];
+  let editorRange = null;
+  const crackEditor = () => attachedEditor?.isConnected ? attachedEditor : document.querySelector('div.__chat_input_textarea[contenteditable="true"]');
+  const memosHere = () => memoCache.filter(memo => !memo.chatId || memo.chatId === chatId());
+  const slotLabel = index => `Alt+${(index + 1) % 10}`;
+
+  async function readMemos() {
+    const list = (await chrome.storage.local.get(MEMO_KEY))[MEMO_KEY];
+    memoCache = Array.isArray(list) ? list : [];
+    return memoCache;
+  }
+  async function writeMemos(list) {
+    memoCache = list;
+    await chrome.storage.local.set({ [MEMO_KEY]: list });
+  }
+  readMemos();
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes[MEMO_KEY]) return;
+    memoCache = Array.isArray(changes[MEMO_KEY].newValue) ? changes[MEMO_KEY].newValue : [];
+    if (!document.getElementById('cm-memo-panel')?.hidden) renderMemos();
+  });
+
+  document.addEventListener('selectionchange', () => {
+    const selection = window.getSelection();
+    if (selection?.rangeCount && attachedEditor?.contains(selection.anchorNode)) editorRange = selection.getRangeAt(0).cloneRange();
+  });
+  // Replace the current selection in the editor the way typing does: the browser edits its own
+  // selection and the page sees ordinary input events. Crack's paste handler inserts at the
+  // caret it tracked itself (it ignored a selected 대체어), so a paste is only the fallback.
+  function replaceSelection(editor, text) {
+    if (document.execCommand('insertText', false, text)) return;
+    const data = new DataTransfer();
+    data.setData('text/plain', text);
+    editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  }
+  function insertIntoEditor(text) {
+    const editor = crackEditor();
+    if (!editor) return false;
+    editor.focus();
+    const selection = window.getSelection();
+    let range = editorRange && editor.contains(editorRange.startContainer) ? editorRange : null;
+    if (!range) { range = document.createRange(); range.selectNodeContents(editor); range.collapse(false); }
+    selection.removeAllRanges();
+    selection.addRange(range);
+    replaceSelection(editor, text);
+    return true;
+  }
+
+  // Alt+1 … Alt+0 (⌥ on Mac) put the first ten memos of this chat at the caret.
+  document.addEventListener('keydown', event => {
+    if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.isComposing) return;
+    const digit = /^Digit(\d)$/.exec(event.code)?.[1];
+    if (digit === undefined) return;
+    const editor = crackEditor();
+    const target = event.target;
+    // Other text fields (Trace's own editors, Crack's search) keep their keys.
+    if (!editor || (target !== editor && !editor.contains(target) && target?.closest?.('input, textarea, [contenteditable="true"]'))) return;
+    const memo = memosHere()[(Number(digit) + 9) % 10];
+    if (!memo) return;
+    event.preventDefault();
+    event.stopPropagation();
+    insertIntoEditor(memo.text);
+  }, true);
+
+  // 대체어: "ㅈㅌ" + space becomes the memo, as long as the word stands on its own.
+  // With a Korean IME the space that ends "ㅌ" arrives as part of the composition, so the input
+  // event's type cannot be trusted: after a space key or an inserted space, look at the text.
+  document.addEventListener('keyup', event => {
+    if (event.code === 'Space' || event.key === ' ') scheduleTrigger(event.target);
+  }, true);
+  document.addEventListener('input', event => {
+    if (/^insert/.test(event.inputType || '') && /[\s ]$/.test(event.data || '')) scheduleTrigger(event.target);
+  }, true);
+  function scheduleTrigger(target) {
+    const editor = crackEditor();
+    if (!editor || !editor.contains(target) || !memosHere().some(memo => memo.trigger)) return;
+    // After the editor has applied the space (and finished the composition) itself.
+    setTimeout(() => expandTrigger(editor), 0);
+  }
+  function expandTrigger(editor) {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount || !selection.isCollapsed || !editor.contains(selection.anchorNode)) return;
+    const triggers = new Map(memosHere().filter(memo => memo.trigger).map(memo => [memo.trigger, memo]));
+    // The text of the current line up to the caret, whatever pieces the editor split it into.
+    const caret = selection.getRangeAt(0);
+    const line = document.createRange();
+    const anchor = selection.anchorNode.nodeType === Node.TEXT_NODE ? selection.anchorNode.parentElement : selection.anchorNode;
+    const block = anchor?.closest('p, div, li');
+    line.setStart(block && editor.contains(block) ? block : editor, 0);
+    line.setEnd(caret.startContainer, caret.startOffset);
+    const word = /(?:^|[\s ])(\S+)[\s ]$/.exec(line.toString())?.[1];
+    const memo = word && triggers.get(word);
+    if (!memo) return;
+    // Select the word and its space backwards from the caret, across text nodes if needed.
+    for (let i = 0; i < word.length + 1; i++) selection.modify('extend', 'backward', 'character');
+    if (selection.toString().replace(/ /g, ' ').trimEnd() !== word) { selection.collapseToEnd(); return; }
+    replaceSelection(editor, /\s$/.test(memo.text) ? memo.text : `${memo.text} `);
+  }
+
+  function createMemoPanel() {
+    const panel = document.createElement('div');
+    panel.id = 'cm-memo-panel';
+    panel.className = 'cm-composer-preview cm-dock-panel';
+    panel.hidden = true;
+    panel.innerHTML = `
+      <div class="cm-composer-preview-header">
+        <span><strong>메모</strong> · 누르기 · Alt(⌥)+숫자 · 대체어 뒤 스페이스</span>
+        <button type="button" id="cm-memo-add" class="cm-memo-add">＋ 새 메모</button>
+      </div>
+      <ul id="cm-memo-list" class="cm-memo-list"></ul>
+      <div id="cm-memo-form" class="cm-memo-form" hidden>
+        <div class="cm-memo-new-title">새 메모</div>
+        <textarea id="cm-memo-text" class="cm-memo-text" placeholder="넣을 내용: 자주 쓰는 지시문, 행동 묘사 틀, 잊기 싫은 설정…" aria-label="메모 내용"></textarea>
+        <label class="cm-memo-trigger-row">
+          <span>대체어</span>
+          <input type="text" id="cm-memo-trigger" class="cm-memo-trigger" placeholder="예: ;전투 (선택)" autocomplete="off" spellcheck="false">
+          <small>입력창에 치고 스페이스를 누르면 위 내용으로 바뀌어요</small>
+        </label>
+        <div class="cm-composer-preview-footer">
+          <label class="cm-memo-scope"><input type="checkbox" id="cm-memo-here"> 이 대화방에서만</label>
+          <span>
+            <button type="button" id="cm-memo-cancel">취소</button>
+            <button type="button" id="cm-memo-save">저장</button>
+          </span>
+        </div>
+      </div>`;
+    const form = panel.querySelector('#cm-memo-form');
+    const text = panel.querySelector('#cm-memo-text');
+    const trigger = panel.querySelector('#cm-memo-trigger');
+    const here = panel.querySelector('#cm-memo-here');
+    const save = panel.querySelector('#cm-memo-save');
+    const cancel = panel.querySelector('#cm-memo-cancel');
+    const add = panel.querySelector('#cm-memo-add');
+    const reset = () => {
+      panel.dataset.editing = ''; text.value = ''; trigger.value = ''; here.checked = false;
+      form.hidden = true; add.hidden = false; panel.querySelector('.cm-memo-new-title').textContent = '새 메모';
+    };
+    add.onclick = () => {
+      reset();
+      form.hidden = false;
+      add.hidden = true;
+      text.focus();
+    };
+    // Ctrl/⌘+Enter saves from anywhere in the form.
+    form.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); save.click(); }
+    });
+    save.onclick = async () => {
+      const body = text.value.replace(/\s+$/, '');
+      if (!body.trim()) { text.focus(); return; }
+      const word = trigger.value.trim();
+      if (/\s/.test(word)) { alert('대체어에는 띄어쓰기를 넣을 수 없어요.'); trigger.focus(); return; }
+      const list = await readMemos();
+      const scope = here.checked ? chatId() || null : null;
+      const clash = word && list.find(memo => memo.id !== panel.dataset.editing && memo.trigger === word
+        && (!memo.chatId || !scope || memo.chatId === scope));
+      if (clash) { alert(`'${word}'은(는) 다른 메모의 대체어예요.`); trigger.focus(); return; }
+      const at = list.findIndex(memo => memo.id === panel.dataset.editing);
+      const fields = { text: body, trigger: word, chatId: scope, at: Date.now() };
+      if (at >= 0) list[at] = { ...list[at], ...fields };
+      else list.push({ id: `memo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, ...fields });
+      await writeMemos(list);
+      reset();
+      renderMemos();
+    };
+    cancel.onclick = reset;
+    closeDockPanelOnEscape(panel);
+    return panel;
+  }
+  async function renderMemos() {
+    const panel = document.getElementById('cm-memo-panel');
+    const list = panel?.querySelector('#cm-memo-list');
+    if (!list) return;
+    await readMemos();
+    const memos = memosHere();
+    list.replaceChildren();
+    if (!memos.length) {
+      const empty = document.createElement('li');
+      empty.className = 'cm-memo-empty';
+      empty.textContent = '아직 메모가 없어요. ＋ 새 메모로 추가하세요. 앞의 10개는 Alt+1…Alt+0으로 넣을 수 있어요.';
+      list.append(empty);
+    }
+    const button = (label, title, onclick) => {
+      const el = document.createElement('button');
+      el.type = 'button';
+      el.textContent = label;
+      el.title = title;
+      el.onclick = onclick;
+      return el;
+    };
+    memos.forEach((memo, index) => {
+      const item = document.createElement('li');
+      const key = document.createElement('span');
+      key.className = 'cm-memo-key';
+      key.textContent = index < MEMO_SLOTS ? slotLabel(index) : '';
+      const use = button(memo.text, '입력창에 넣기', () => {
+        if (!insertIntoEditor(memo.text)) alert('크랙 입력창을 찾지 못했어요.');
+      });
+      use.className = 'cm-memo-use';
+      const tag = document.createElement('span');
+      tag.className = 'cm-memo-tag';
+      tag.textContent = [memo.trigger, memo.chatId && '이 방'].filter(Boolean).join(' · ');
+      // Moving up changes which Alt+number a memo gets.
+      const up = button('↑', '위로 (단축키 번호 앞당기기)', async () => {
+        const all = await readMemos();
+        const from = all.findIndex(entry => entry.id === memo.id);
+        const to = all.findIndex(entry => entry.id === memos[index - 1].id);
+        [all[from], all[to]] = [all[to], all[from]];
+        await writeMemos(all);
+        renderMemos();
+      });
+      up.disabled = index === 0;
+      const edit = button('✏️', '수정', () => {
+        panel.dataset.editing = memo.id;
+        panel.querySelector('#cm-memo-text').value = memo.text;
+        panel.querySelector('#cm-memo-trigger').value = memo.trigger || '';
+        panel.querySelector('#cm-memo-here').checked = Boolean(memo.chatId);
+        panel.querySelector('.cm-memo-new-title').textContent = '메모 수정';
+        panel.querySelector('#cm-memo-form').hidden = false;
+        panel.querySelector('#cm-memo-add').hidden = true;
+        panel.querySelector('#cm-memo-text').focus();
+      });
+      const remove = button('🗑️', '삭제', async () => {
+        if (!confirm('이 메모를 삭제할까요?')) return;
+        await writeMemos((await readMemos()).filter(entry => entry.id !== memo.id));
+        renderMemos();
+      });
+      item.append(key, use, tag, up, edit, remove);
+      list.append(item);
+    });
   }
 
   let jumpSerial = 0;
@@ -1553,7 +1878,19 @@
               const result = await chrome.runtime.sendMessage({ type: 'DROP_KEYWORD', chatId: id, keyword });
               if (!result?.success) alert(result?.error || '키워드를 제외하지 못했습니다.');
             };
-            card.append(exclude);
+            // Pinning a keyword injects its current notes on every send, whatever the draft.
+            const pinKeyword = document.createElement('button');
+            pinKeyword.className = `cm-btn-secondary small cm-pin-toggle${entry.pinned ? ' active' : ''}`;
+            pinKeyword.type = 'button';
+            pinKeyword.textContent = entry.pinned ? '📌 고정됨' : '📌 키워드 고정';
+            pinKeyword.setAttribute('aria-pressed', String(Boolean(entry.pinned)));
+            pinKeyword.title = '이 키워드의 현재 기억을 매번 주입합니다 (고정 예산 700자 안에서 최신 순)';
+            pinKeyword.onclick = async () => {
+              const result = await chrome.runtime.sendMessage({ type: 'TOGGLE_KEYWORD_PIN', chatId: id, keyword: entry.keyword });
+              if (!result?.success) { alert(result?.error || '고정하지 못했습니다.'); return; }
+              renderMemoryDeckTab(id, modal);
+            };
+            card.append(pinKeyword, exclude);
             for (const fact of entry.current) {
               const step = document.createElement('div');
               step.className = 'cm-evolution-step cm-nano-fact';
@@ -1578,6 +1915,17 @@
                 if (!result?.success) { toggle.checked = !toggle.checked; alert(result?.error || '변경하지 못했습니다.'); }
               };
               toggleLabel.append(toggle, document.createTextNode(' 주입'));
+              const pin = document.createElement('button');
+              pin.className = `cm-btn-secondary small cm-pin-toggle${fact.pinned ? ' active' : ''}`;
+              pin.type = 'button';
+              pin.textContent = fact.pinned ? '📌 고정됨' : '📌 고정';
+              pin.setAttribute('aria-pressed', String(Boolean(fact.pinned)));
+              pin.title = '이 기억을 매번 주입합니다';
+              pin.onclick = async () => {
+                const result = await chrome.runtime.sendMessage({ type: 'UPDATE_NANO_FACT', chatId: id, factId: fact.id, patch: { pinned: !fact.pinned } });
+                if (!result?.success) { alert(result?.error || '고정하지 못했습니다.'); return; }
+                renderMemoryDeckTab(id, modal);
+              };
               const edit = document.createElement('button');
               edit.className = 'cm-btn-secondary small';
               edit.type = 'button';
@@ -1591,7 +1939,7 @@
                 const result = await chrome.runtime.sendMessage({ type: 'UPDATE_NANO_FACT', chatId: id, factId: fact.id, delete: true });
                 if (!result?.success) alert(result?.error || '삭제하지 못했습니다.');
               };
-              controls.append(toggleLabel, edit, remove);
+              controls.append(toggleLabel, pin, edit, remove);
               head.append(turn, controls);
               const body = document.createElement('div');
               body.textContent = fact.fact;

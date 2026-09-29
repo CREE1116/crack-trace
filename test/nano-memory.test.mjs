@@ -911,3 +911,54 @@ test('meaning search: embedding ranks join word search, and a slow answer does n
   const slow = await dispatch({ type: 'GET_PREPARED_CONTEXT', chatId: 'room', outgoing: draft });
   assert.equal(slow.semantic, false, 'went out with word search alone');
 });
+
+test('찾기 lists every turn with the words as typed, oldest first, then close matches', () => {
+  const { context } = workerHarness();
+  const messages = [
+    { id: 'm1', role: 'assistant', text: '```INFO\n⌛ 8일차 낮 13:10 🏢관리국\n```\n아린이 **월광검**을 뽑았다.' },
+    { id: 'm2', role: 'user', text: '<!--TRACE-->\n[1] 월광검은 아린의 검이다.\n<!--/TRACE-->\n그 검 다시 보여줘' },
+    { id: 'm3', role: 'assistant', text: '아린은 월광 검집을 풀었다. 은빛 열쇠는 서고에 있다.' },
+    { id: 'm4', role: 'assistant', text: '월광검이 다시 빛났다.' }
+  ];
+  const found = context.searchTurns(messages, '월광검');
+  assert.deepEqual(Array.from(found.results, hit => [hit.turn, hit.exact]), [[1, true], [4, true], [3, false]],
+    'exact hits first; "월광 검집" is a close match; the injected block in turn 2 is not what the player saw');
+  assert.equal(found.total, 2);
+  assert.equal(found.results[0].match, '월광검');
+  assert.equal(found.results[1].before, '');
+  assert.equal(context.searchTurns(messages, '8일차').results[0]?.turn, 1, 'status windows are searchable');
+  const close = context.searchTurns(messages, '월광 검집 서고');
+  assert.equal(close.results[0]?.turn, 3);
+  assert.deepEqual(Array.from(context.searchTurns(messages, '오늘 저녁 메뉴').results), []);
+});
+
+test('in LLM mode a pinned memory and a pinned keyword are injected even when the draft is unrelated', async () => {
+  const { data, context, dispatch } = workerHarness();
+  const all = [];
+  for (let i = 0; i < 12; i++) all.push({ id: `m${i}`, role: i % 2 ? 'assistant' : 'user', text: `${i}번째 대화` });
+  vm.runInContext('activeMemory', context).set('room', { chatId: 'room', all, units: [], ix: null });
+  data.set('nanoMemory:room', { facts: [
+    { id: 'f1', keyword: '월광검', fact: '월광검은 달빛으로 환영을 벤다.', turn: 3, who: ['아린'], domain: '개념', kind: '설정' },
+    { id: 'f2', keyword: '세린', fact: '세린은 아린의 언니다.', turn: 4, who: ['세린'], domain: '인물', kind: '관계' },
+    { id: 'f3', keyword: '세린', fact: '세린은 서고 열쇠를 숨겼다.', turn: 6, who: ['세린'], domain: '인물', kind: '비밀' },
+    { id: 'f4', keyword: '도윤', fact: '도윤은 경비대장이다.', turn: 5, who: ['도윤'], domain: '인물', kind: '설정' }
+  ] });
+  const draft = '오늘 저녁은 뭘 먹을까';
+  let prepared = await dispatch({ type: 'GET_PREPARED_CONTEXT', chatId: 'room', outgoing: draft });
+  assert.ok(!/월광검|세린/.test(prepared.content), 'nothing relevant before pinning');
+
+  assert.equal((await dispatch({ type: 'UPDATE_NANO_FACT', chatId: 'room', factId: 'f1', patch: { pinned: true } })).success, true);
+  assert.equal((await dispatch({ type: 'TOGGLE_KEYWORD_PIN', chatId: 'room', keyword: '세린' })).pinned, true);
+  prepared = await dispatch({ type: 'GET_PREPARED_CONTEXT', chatId: 'room', outgoing: draft });
+  assert.match(prepared.content, /월광검은 달빛으로 환영을 벤다/);
+  assert.match(prepared.content, /세린은 아린의 언니다/);
+  assert.match(prepared.content, /세린은 서고 열쇠를 숨겼다/);
+  assert.doesNotMatch(prepared.content, /도윤은 경비대장/);
+  const cards = (await dispatch({ type: 'GET_MEMORY_CARDS', chatId: 'room' })).cards;
+  assert.equal(cards.find(card => card.keyword === '세린').pinned, true);
+  assert.equal(cards.find(card => card.keyword === '월광검').current[0].pinned, true);
+
+  assert.equal((await dispatch({ type: 'TOGGLE_KEYWORD_PIN', chatId: 'room', keyword: '세린' })).pinned, false);
+  prepared = await dispatch({ type: 'GET_PREPARED_CONTEXT', chatId: 'room', outgoing: draft });
+  assert.doesNotMatch(prepared.content, /세린은/);
+});

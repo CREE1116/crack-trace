@@ -316,7 +316,21 @@ function ruleMergeDecision(fact, words, current) {
   return { action: 'new', target: best, overlap: bestOverlap };
 }
 
+// Folding compares every note with every other, and the prompt is prepared on each pause in
+// typing. The notes only change when memory does, so the last few results are reused.
+// Callers read the cards and never change them.
+const foldCache = new Map();
 function foldMemory(facts, decisions = {}) {
+  const key = JSON.stringify([facts, decisions]);
+  let cards = foldCache.get(key);
+  if (!cards) {
+    cards = foldMemoryUncached(facts, decisions);
+    if (foldCache.size >= 4) foldCache.delete(foldCache.keys().next().value);
+  } else foldCache.delete(key);
+  foldCache.set(key, cards);
+  return cards;
+}
+function foldMemoryUncached(facts, decisions = {}) {
   const cards = new Map();
   // Anyone listed as present somewhere is a person, whatever domain the extractor guessed.
   const people = new Set((facts || []).flatMap(fact => (fact.who || []).map(normalizedKeyword)));
@@ -1072,7 +1086,7 @@ async function carryBranchMemory(chatId, messages) {
     [`pins:${chatId}`]: pins,
     [`branchOf:${chatId}`]: { chatId: from, turns: upTo, facts: facts.length, at: Date.now() }
   };
-  for (const key of ['lore', 'dropKw', 'usernote', 'usernoteEnabled']) {
+  for (const key of ['lore', 'dropKw', 'pinKw', 'usernote', 'usernoteEnabled']) {
     if (all[`${key}:${from}`] !== undefined && all[`${key}:${chatId}`] === undefined) copy[`${key}:${chatId}`] = all[`${key}:${from}`];
   }
   await chrome.storage.local.set(copy);
@@ -1336,16 +1350,78 @@ function locateTurns(messages, items) {
   });
 }
 
-function pinnedCards(pins) {
-  const cards = [];
-  let used = 0;
-  // Newest pins win when the budget runs out; the model reads them in turn order.
-  for (const pin of [...(pins || [])].reverse()) {
-    if (used + pin.text.length > PIN_BUDGET) continue;
-    used += pin.text.length;
-    cards.unshift({ id: `pin:${pin.messageId}`, title: '📌', content: pin.text, turn: pin.turn, enabled: true, pinned: true, why: '고정' });
+// "찾기": every turn that contains the words as typed, oldest first (where did it start?),
+// then turns that only share most of the words, by BM25. Text is what the player saw.
+const turnSearchCache = new WeakMap();
+function searchTurns(messages, query, limit = 40) {
+  const fold = text => String(text || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ');
+  const q = fold(query).trim();
+  if (!q || !messages.length) return { results: [], total: 0 };
+  let cached = turnSearchCache.get(messages);
+  if (!cached || cached.length !== messages.length) {
+    const texts = messages.map(message => CrackMatrixEngine.stripOwnBlock(message.text || '').replace(/<!--[\s\S]*?-->|!\[[^\]]*\]\([^)]+\)|```(?:\w+)?/g, ' ').normalize('NFKC').replace(/\*{1,3}|_{2,}/g, '').replace(/\s+/g, ' ').trim());
+    cached = { length: messages.length, texts, folded: texts.map(fold), ix: null };
+    turnSearchCache.set(messages, cached);
   }
-  return cards;
+  const { texts, folded } = cached;
+  const snippet = (index, at, span) => {
+    const text = texts[index];
+    const start = Math.max(0, at - 40);
+    const end = Math.min(text.length, at + span + 80);
+    return { before: (start ? '…' : '') + text.slice(start, at), match: text.slice(at, at + span), after: text.slice(at + span, end) + (end < text.length ? '…' : '') };
+  };
+  const result = index => ({ turn: index + 1, role: messages[index].role, messageId: messages[index].id });
+  const exact = [];
+  folded.forEach((text, index) => {
+    const at = text.indexOf(q);
+    if (at >= 0) exact.push({ ...result(index), exact: true, ...snippet(index, at, q.length) });
+  });
+  const results = exact.slice(0, limit);
+  if (results.length < limit) {
+    cached.ix ??= CrackMatrixEngine.index(texts.map((text, index) => ({ unitId: String(index), messageId: String(index), role: messages[index].role, pos: 0, order: index, text, len: text.length })));
+    const words = q.split(' ').filter(Boolean);
+    const seen = new Set(exact.map(hit => hit.turn));
+    for (const hit of CrackMatrixEngine.search(cached.ix, q)) {
+      const index = Number(hit.messageId);
+      if (seen.has(index + 1)) continue;
+      // Close matches still need most of the typed words, so one shared syllable is not a hit.
+      const present = words.filter(word => folded[index].includes(word.slice(0, Math.max(2, word.length - 1))));
+      if (present.length < Math.ceil(words.length * 0.6)) continue;
+      const first = present.map(word => folded[index].indexOf(word.slice(0, Math.max(2, word.length - 1)))).sort((a, b) => a - b)[0];
+      results.push({ ...result(index), exact: false, ...snippet(index, first, 0) });
+      seen.add(index + 1);
+      if (results.length >= limit) break;
+    }
+  }
+  return { results, total: exact.length };
+}
+
+// Everything the user pinned, within one budget: single memories first (the most deliberate
+// and shortest), then pinned turns, then the current notes of pinned keywords, newest first.
+// The model reads the survivors in turn order.
+function pinnedCards(pins, facts = [], pinnedKeywords = [], decisions = {}) {
+  const chosen = [];
+  let used = 0;
+  const take = card => {
+    if (!card.content || used + card.content.length > PIN_BUDGET || chosen.some(other => other.id === card.id)) return;
+    used += card.content.length;
+    chosen.push(card);
+  };
+  const factCard = (fact, why) => ({ id: `nano:${fact.id}`, title: fact.keyword, content: fact.fact, turn: fact.turn,
+    who: mergeNameVariants(fact.who || []), enabled: true, pinned: true, why });
+  const newestFirst = (a, b) => (Number(b.turn) || 0) - (Number(a.turn) || 0);
+  for (const fact of facts.filter(fact => fact.pinned && fact.enabled !== false).sort(newestFirst)) take(factCard(fact, '고정'));
+  for (const pin of [...(pins || [])].reverse()) {
+    take({ id: `pin:${pin.messageId}`, title: '📌', content: pin.text, turn: pin.turn, enabled: true, pinned: true, why: '고정' });
+  }
+  const keywords = new Set(pinnedKeywords);
+  if (keywords.size) {
+    const current = [...foldMemory(facts.filter(fact => fact.enabled !== false), decisions).values()]
+      .filter(card => keywords.has(card.keyword)).flatMap(card => card.current);
+    for (const fact of current.sort(newestFirst)) take(factCard(fact, `고정 키워드: ${fact.keyword}`));
+  }
+  const turnOf = card => Number(card.turn) || 0;
+  return chosen.sort((a, b) => turnOf(a) - turnOf(b));
 }
 
 // --- Communication Dispatcher ---
@@ -1433,6 +1509,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (!message) throw Error(`대화 ${msg.turn}을(를) 기록에서 찾지 못했습니다.`);
       sendResponse({ success: true, messageId: message.id, role: message.role,
         text: CrackMatrixEngine.stripOwnBlock(message.text || '').trim() });
+    })().catch(error => sendResponse({ success: false, error: String(error.message || error) }));
+    return true;
+  }
+  if (msg.type === 'SEARCH_TURNS') {
+    (async () => {
+      const mem = await memoryFor(String(msg.chatId || ''));
+      sendResponse({ success: true, ...searchTurns(mem?.all || [], String(msg.query || '')) });
     })().catch(error => sendResponse({ success: false, error: String(error.message || error) }));
     return true;
   }
@@ -1536,14 +1619,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!chatId) { sendResponse({ success: false, error: '채팅방이 필요합니다.' }); return; }
     (async () => {
       const facts = await loadNanoFacts(chatId);
-      const decisions = (await chrome.storage.local.get(`memoryMerge:${chatId}`))[`memoryMerge:${chatId}`] || {};
+      const stored = await chrome.storage.local.get([`memoryMerge:${chatId}`, `pinKw:${chatId}`]);
+      const decisions = stored[`memoryMerge:${chatId}`] || {};
+      const pinnedKeywords = new Set(stored[`pinKw:${chatId}`] || []);
       const plain = ({ words, ...note }) => note;
       const cards = [...foldMemory(facts, decisions).values()].map(card => ({
-        keyword: card.keyword, domain: card.domain,
+        keyword: card.keyword, domain: card.domain, pinned: pinnedKeywords.has(card.keyword),
         current: card.current.map(plain), history: card.history.map(plain),
         lastTurn: Math.max(0, ...card.current.map(note => Number(note.turn) || 0))
       })).sort((a, b) => b.lastTurn - a.lastTurn);
       sendResponse({ success: true, cards, factCount: facts.length });
+    })().catch(error => sendResponse({ success: false, error: String(error.message || error) }));
+    return true;
+  }
+  if (msg.type === 'TOGGLE_KEYWORD_PIN') {
+    const chatId = String(msg.chatId || '');
+    const keyword = String(msg.keyword || '').trim();
+    if (!chatId || !keyword) { sendResponse({ success: false, error: '키워드가 필요합니다.' }); return; }
+    (async () => {
+      const key = `pinKw:${chatId}`;
+      const list = (await chrome.storage.local.get(key))[key] || [];
+      const pinned = !list.includes(keyword);
+      await chrome.storage.local.set({ [key]: pinned ? [...list, keyword] : list.filter(entry => entry !== keyword) });
+      sendResponse({ success: true, pinned });
     })().catch(error => sendResponse({ success: false, error: String(error.message || error) }));
     return true;
   }
@@ -1583,6 +1681,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           previous.domain = patch.domain;
         }
         if ('enabled' in patch) previous.enabled = Boolean(patch.enabled);
+        if ('pinned' in patch) previous.pinned = Boolean(patch.pinned);
         overrides[factId] = previous;
       }
       await chrome.storage.local.set({ [key]: overrides });
@@ -1616,6 +1715,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       `nanoOverrides:${chatId}`,
       `dropKw:${chatId}`,
       `pins:${chatId}`,
+      `pinKw:${chatId}`,
       'llmIntervention',
       'llmIntent',
       'semanticSearch',
@@ -1664,11 +1764,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           ? semanticScores(`facts:${chatId}`, outgoing, nanoFacts.map(fact => ({ id: fact.id, text: `${fact.keyword} ${fact.fact}` })))
           : semanticScores(`passages:${chatId}`, outgoing, (mem?.pix?.units || []).map(unit => ({ id: unit.unitId, text: unit.text })))
       ]) : [null, null];
+      // Pins are the user's explicit "remember this"; they go ahead of retrieved memory.
+      const pinned = pinnedCards(data[`pins:${chatId}`] || [], useNano ? nanoFacts : [],
+        useNano ? data[`pinKw:${chatId}`] || [] : [], data[`memoryMerge:${chatId}`] || {});
+      const pinnedIds = new Set(pinned.map(card => card.id));
       if (useNano) summaries.unshift(...nanoMemoryCards(chatId, nanoFacts, outgoing, cutoff, recentContext, recentText,
-        data[`memoryMerge:${chatId}`] || {}, conversationTopics(nanoFacts, outgoing, all, intentCache.get(`${chatId}\u0000${outgoing.trim()}`)), semantic[1]));
-
-      // Pinned turns are the user's explicit "remember this"; they go ahead of retrieved memory.
-      summaries.unshift(...pinnedCards(data[`pins:${chatId}`] || []));
+        data[`memoryMerge:${chatId}`] || {}, conversationTopics(nanoFacts, outgoing, all, intentCache.get(`${chatId}\u0000${outgoing.trim()}`)), semantic[1])
+        .filter(card => !pinnedIds.has(card.id)));
+      summaries.unshift(...pinned);
 
       const res = CrackMatrixEngine.contextWithAll(null, olderMessages, outgoing, {
         userNote,
@@ -1926,6 +2029,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       `nanoMemoryDraft:${chatId}`,
       `memoryMerge:${chatId}`,
       `pins:${chatId}`,
+      `pinKw:${chatId}`,
       `situation:${chatId}`,
       `nanoOverrides:${chatId}`,
       `dropKw:${chatId}`,

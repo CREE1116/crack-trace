@@ -1142,3 +1142,162 @@ body[data-cm-perf="true"] [data-message-group-id] {
 .cm-card-history { margin-top: 6px; font-size: 11.5px; color: var(--cm-text-3); }
 .cm-card-history summary { cursor: pointer; }
 .cm-card-history-row { padding: 3px 0 3px 8px; border-left: 2px solid var(--cm-line); margin-top: 3px; }
+
+/* 찾기 · 메모 panels above the input */
+.cm-dock-panel .cm-composer-preview-header strong { color: var(--cm-text); }
+.cm-find-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--cm-line);
+  border-radius: var(--cm-r-control);
+  background: var(--cm-bg);
+  color: var(--cm-text);
+  font-size: 12px;
+}
+#cm-find-count { flex-shrink: 0; }
+.cm-find-results,
+.cm-memo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.cm-find-hit {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 4px;
+  border: 0;
+  border-bottom: 1px solid var(--cm-line);
+  background: none;
+  color: var(--cm-text-2);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+.cm-find-hit:hover,
+.cm-find-hit:focus-visible { background: var(--cm-bg-hover); }
+.cm-find-hit.close { opacity: 0.75; }
+.cm-find-turn {
+  flex-shrink: 0;
+  min-width: 42px;
+  color: var(--cm-text-3);
+  font-variant-numeric: tabular-nums;
+}
+.cm-find-text { word-break: break-all; }
+.cm-find-text mark {
+  background: var(--cm-brand-soft);
+  color: var(--cm-text);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.cm-memo-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  border-bottom: 1px solid var(--cm-line);
+}
+.cm-memo-list li button {
+  border: 0;
+  background: none;
+  color: var(--cm-text-3);
+  cursor: pointer;
+  padding: 6px 4px;
+  font-size: 11px;
+}
+.cm-memo-list .cm-memo-use {
+  flex: 1;
+  min-width: 0;
+  color: var(--cm-text);
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-all;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.5;
+}
+.cm-memo-list li button:hover,
+.cm-memo-list li button:focus-visible { background: var(--cm-bg-hover); }
+.cm-memo-tag { flex-shrink: 0; padding-top: 6px; color: var(--cm-text-3); font-size: 10px; }
+.cm-memo-empty { padding: 8px 4px; color: var(--cm-text-3); }
+.cm-memo-text {
+  display: block;
+  width: 100%;
+  min-height: 56px;
+  max-height: 160px;
+  box-sizing: border-box;
+  margin-top: 8px;
+  padding: 8px;
+  resize: vertical;
+  border: 1px solid var(--cm-line);
+  border-radius: var(--cm-r-control);
+  background: var(--cm-bg);
+  color: var(--cm-text);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.cm-memo-scope { display: flex; align-items: center; gap: 4px; color: var(--cm-text-3); }
+.cm-pin-toggle.active {
+  border-color: var(--cm-brand);
+  background: var(--cm-brand-soft);
+  color: var(--cm-text);
+}
+.cm-memo-add {
+  border: 0;
+  background: none;
+  color: var(--cm-link);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+.cm-memo-form {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--cm-line);
+  border-radius: var(--cm-r-control);
+  background: var(--cm-bg);
+}
+.cm-memo-form[hidden] { display: none; }
+.cm-memo-form .cm-memo-text { background: var(--cm-bg-2); }
+.cm-memo-form .cm-composer-preview-footer button#cm-memo-save {
+  padding: 3px 10px;
+  border-radius: var(--cm-r-control);
+  background: var(--cm-brand);
+  color: #fff;
+  font-weight: 600;
+}
+.cm-memo-new-title { color: var(--cm-text); font-weight: 600; }
+.cm-memo-trigger-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  color: var(--cm-text-2);
+}
+.cm-memo-trigger-row small { color: var(--cm-text-3); font-size: 10px; }
+.cm-memo-trigger-row + .cm-memo-text { margin-top: 6px; }
+.cm-memo-trigger {
+  width: 150px;
+  padding: 4px 6px;
+  border: 1px solid var(--cm-line);
+  border-radius: var(--cm-r-control);
+  background: var(--cm-bg);
+  color: var(--cm-text);
+  font-size: 11px;
+}
+.cm-memo-key {
+  flex-shrink: 0;
+  min-width: 38px;
+  padding-top: 6px;
+  color: var(--cm-text-3);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.cm-memo-list li button:disabled { opacity: 0.3; cursor: default; }
