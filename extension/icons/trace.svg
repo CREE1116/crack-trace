@@ -1,8 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Trace">
-  <defs><clipPath id="tile"><rect width="128" height="128" rx="27"/></clipPath></defs>
-  <g clip-path="url(#tile)">
+  <defs>
+    <linearGradient id="left" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="72%" stop-color="#F7F3EE"/>
+      <stop offset="100%" stop-color="#D9CFC6"/>
+    </linearGradient>
+    <linearGradient id="right" x1="1" y1="0" x2="0" y2="0">
+      <stop offset="72%" stop-color="#F7F3EE"/>
+      <stop offset="100%" stop-color="#D9CFC6"/>
+    </linearGradient>
+  </defs>
+  <g>
     <rect width="128" height="128" fill="#141111"/>
-    <path d="M0 35 55 48v80H0Z" fill="#F7F3EE"/>
-    <path d="m128 35-55 13v80h55Z" fill="#F7F3EE"/>
+    <path d="M0 32Q29 35 55 49V128H0Z" fill="url(#left)"/>
+    <path d="M128 32Q99 35 73 49V128H128Z" fill="url(#right)"/>
+    <path d="M0 46Q28 48 53 61M128 46Q100 48 75 61" fill="none" stroke="#DBD1C7" stroke-width="2" opacity=".8"/>
   </g>
 </svg>
