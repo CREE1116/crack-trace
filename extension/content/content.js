@@ -607,7 +607,7 @@
         });
         if (preview) preview.value = res?.success ? (res.content || cleanPrompt) : '프롬프트를 준비하지 못했습니다.';
         if (previewStatus) previewStatus.textContent = res?.success
-          ? (res.selected?.length ? `주입 ${res.selected.length}건 · ${res.mode === 'nano' ? 'LLM 기억' : '규칙식 기억'}` : `주입 없음 · ${res.reason || '관련 기억 없음'}`)
+          ? (res.selected?.length ? `주입 ${res.selected.length}건 · ${res.mode === 'nano' ? 'LLM 기억' : '원문 검색'}${res.semantic ? ' · 의미 검색' : ''}` : `주입 없음 · ${res.reason || '관련 기억 없음'}`)
           : '프롬프트 준비 오류';
         if (res && res.success && res.content) {
           chrome.runtime.sendMessage({ type: 'LIVE_PROMPT_PREVIEW', target: 'sidepanel', chatId: id,
@@ -1168,13 +1168,13 @@
                 <div style="display: grid;grid-template-columns: 1fr 1fr;gap: 8px;margin-bottom: 8px">
                   <input id="cm-lore-title" class="cm-input" placeholder="명칭 (예: 성검 아르테미스)">
                   <select id="cm-lore-triggertype" class="cm-input">
-                    <option value="both">키워드 + 시맨틱 벡터 매칭 (권장)</option>
-                    <option value="keyword">엄격한 키워드 매칭만</option>
-                    <option value="semantic">시맨틱 벡터 매칭만</option>
+                    <option value="both">키워드 + 내용 검색 (권장)</option>
+                    <option value="keyword">키워드가 나올 때만</option>
                   </select>
                 </div>
                 <input id="cm-lore-kw" class="cm-input" placeholder="트리거 키워드 (쉼표 구분: 성검, 아르테미스, 신성무기)">
                 <textarea id="cm-lore-content" class="cm-textarea" placeholder="주입할 설정 및 행동 지침 내용"></textarea>
+                <textarea id="cm-lore-relations" class="cm-textarea" placeholder="관계 (선택, 한 줄에 주체 > 관계 > 대상)&#10;예: 서령 > 맡김 > 은빛 열쇠" style="min-height: 70px"></textarea>
                 <div style="display: flex;justify-content: flex-end">
                   <button id="cm-btn-add-lore" class="cm-btn-primary small" type="button">로어 등록</button>
                 </div>
@@ -1206,6 +1206,11 @@
                   <input id="cm-opt-llm-intervention" type="checkbox" checked>
                   <span>LLM으로 기억 만들기 (끄면 대화 원문에서 찾아 넣기)</span>
                 </label>
+                <label class="cm-switch-label full">
+                  <input id="cm-opt-semantic" type="checkbox">
+                  <span>의미 검색 (문장 임베딩 · 처음 켤 때 약 145MB 다운로드)</span>
+                </label>
+                <p style="font-size: 11px;color: var(--cm-text-3);margin: 2px 0 8px">로어·기억·대화 원문을 단어뿐 아니라 뜻으로도 찾습니다. 보낼 때 느리면 단어 검색만 씁니다. <span id="cm-semantic-status"></span></p>
                 <div class="cm-form-row">
                   <label>LLM 모델</label>
                   <span id="cm-llm-status" style="font-size: 12px;color: var(--cm-text-2)">확인 중…</span>
@@ -1943,8 +1948,9 @@
             </div>
           </div>
           <div style="font-size: 11px;color: var(--cm-text);margin-bottom: 4px">
-            트리거: ${item.alwaysInclude ? '상시 주입' : (item.keywords || []).join(', ') || '시맨틱 매칭'} · ${item.triggerType || 'both'}
+            트리거: ${item.alwaysInclude ? '상시 주입' : [(item.keywords || []).join(', '), item.triggerType === 'keyword' ? '' : '내용 검색'].filter(Boolean).join(' + ')}
           </div>
+          ${(item.relations || []).length ? `<div style="font-size: 11px;color: var(--cm-text-3)">관계 ${(item.relations || []).length}건</div>` : ''}
           <p style="font-size: 12px;color: var(--cm-text-2);white-space: pre-wrap;line-height: 1.5;margin: 4px 0">${item.content}</p>
         </div>
       `).join('');
@@ -1976,7 +1982,8 @@
     chrome.storage.local.get([
       'clientViewSettings',
       `auto:${id}`,
-      'llmIntervention'
+      'llmIntervention',
+      'semanticSearch'
     ], res => {
       const v = { ...DEFAULT_VIEW, ...(res.clientViewSettings || {}) };
       const q = selector => modal.querySelector(selector);
@@ -2008,6 +2015,9 @@
 
       if (autoEl) autoEl.checked = res[`auto:${id}`] !== false;
       if (llmEl) llmEl.checked = res.llmIntervention !== false; // default true
+      const semanticEl = q('#cm-opt-semantic');
+      if (semanticEl) semanticEl.checked = res.semanticSearch === true;
+      if (res.semanticSearch) watchSemanticStatus(modal);
     });
 
     refreshLLMStatus(modal);
@@ -2031,6 +2041,21 @@
       el.innerHTML = s.mode === 'nano'
         ? `LLM 처리 <b>${s.processedTurns}/${s.totalTurns}턴</b> · 대기 ${s.pendingTurns}턴 · 기억 사실 ${s.factCount}건<br>이 대화 오늘 전송 <b>${s.roomToday.sends}회</b> · 주입 ${s.roomToday.injected}건`
         : `추출식 대화 <b>${s.totalTurns}턴</b> · 기억 노드 ${s.graphNodes}개<br>이 대화 오늘 전송 <b>${s.roomToday.sends}회</b> · 주입 ${s.roomToday.injected}건`;
+    });
+  }
+
+  // While the embedding model downloads, show progress; stop once it is ready or failed.
+  let semanticTimer = 0;
+  function watchSemanticStatus(modal) {
+    clearTimeout(semanticTimer);
+    const el = modal.querySelector('#cm-semantic-status');
+    if (!el) return;
+    chrome.runtime.sendMessage({ type: 'SEMANTIC_STATUS' }, res => {
+      if (chrome.runtime.lastError || !res) { el.textContent = '· 상태를 확인하지 못했어요'; return; }
+      if (res.state === 'ready') { el.textContent = '· 준비됨'; return; }
+      if (res.state === 'error') { el.textContent = `· 준비 실패: ${res.error || ''}`; return; }
+      el.textContent = res.total ? `· 받는 중 ${Math.round(100 * res.loaded / res.total)}%` : '· 준비 중…';
+      if (modal.classList.contains('open')) semanticTimer = setTimeout(() => watchSemanticStatus(modal), 1000);
     });
   }
 
@@ -2203,8 +2228,14 @@
       const triggerType = modal.querySelector('#cm-lore-triggertype').value;
       const kw = modal.querySelector('#cm-lore-kw').value.trim();
       const content = modal.querySelector('#cm-lore-content').value.trim();
+      const relationText = modal.querySelector('#cm-lore-relations').value.trim();
       const alwaysInclude = modal.querySelector('#cm-lore-always').checked;
       if (!content) { alert('설정 내용을 입력하세요.'); return; }
+      const relations = relationText ? relationText.split('\n').filter(Boolean).map(line => line.split('>').map(part => part.trim())) : [];
+      if (relations.some(parts => parts.length !== 3 || parts.some(part => !part))) {
+        alert('관계는 한 줄에 주체 > 관계 > 대상 형식으로 입력하세요.');
+        return;
+      }
 
       const keyName = `lore:${currentId}`;
       chrome.storage.local.get([keyName], res => {
@@ -2215,6 +2246,7 @@
           triggerType,
           keywords: kw.split(',').map(s => s.trim()).filter(Boolean),
           content,
+          relations,
           alwaysInclude,
           enabled: true
         });
@@ -2222,6 +2254,7 @@
           modal.querySelector('#cm-lore-title').value = '';
           modal.querySelector('#cm-lore-kw').value = '';
           modal.querySelector('#cm-lore-content').value = '';
+          modal.querySelector('#cm-lore-relations').value = '';
           modal.querySelector('#cm-lore-always').checked = false;
           loadLoreTab(currentId, modal);
           refreshDockLabels();
@@ -2317,6 +2350,14 @@
     for (const selector of ['#cm-opt-auto', '#cm-opt-llm-intervention']) {
       modal.querySelector(selector).onchange = saveMemorySettings;
     }
+    modal.querySelector('#cm-opt-semantic').onchange = event => {
+      const on = event.target.checked;
+      chrome.storage.local.set({ semanticSearch: on }, () => {
+        if (on) chrome.runtime.sendMessage({ type: 'SEMANTIC_PREPARE' }, () => watchSemanticStatus(modal));
+        else modal.querySelector('#cm-semantic-status').textContent = '';
+        handleTyping(attachedEditor?.innerText || '');
+      });
+    };
     modal.querySelector('#cm-btn-llm-download').onclick = () => {
       // Model download needs a click inside an extension page, so hand off to the side panel.
       chrome.runtime.sendMessage({ type: 'OPEN_NANO_PANEL', chatId: id() }, result => {

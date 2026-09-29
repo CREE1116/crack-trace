@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Trace — 크랙 기억 도우미",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "크랙 대화에서 관련 기억과 로어북을 찾아 입력에 붙이고, 모델 측정 정보를 보여줍니다.",
   "permissions": [
     "storage",
@@ -17,8 +17,14 @@
     "https://crack.wrtn.ai/*",
     "https://*.wrtn.ai/*",
     "https://rs.igx.kr/*",
-    "https://igx-radiosonde-api-striker.b-cdn.net/*"
+    "https://igx-radiosonde-api-striker.b-cdn.net/*",
+    "https://huggingface.co/*",
+    "https://*.hf.co/*",
+    "https://cdn.jsdelivr.net/*"
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
   "background": {
     "service_worker": "background/service-worker.js"
   },

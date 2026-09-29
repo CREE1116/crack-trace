@@ -379,7 +379,7 @@ function alreadyInContext(fact, recentCompact) {
 
 // topics: normalized keyword -> { weight, why }. Weight 1 = what the player is talking about
 // (named in the draft, or inferred by the LLM); 0.5 = what the last two turns were about.
-function nanoMemoryCards(chatId, facts, query, recentCutoff = Infinity, recentContext = '', recentText = '', decisions = {}, topics = new Map()) {
+function nanoMemoryCards(chatId, facts, query, recentCutoff = Infinity, recentContext = '', recentText = '', decisions = {}, topics = new Map(), semantic = null) {
   if (!Array.isArray(facts) || !facts.length || !(query + recentContext).trim()) return [];
   const recentCompact = compactEvidence(recentText);
   const eligible = currentNotes(facts.filter(fact => fact.enabled !== false && Number(fact.turn) < recentCutoff
@@ -409,12 +409,27 @@ function nanoMemoryCards(chatId, facts, query, recentCutoff = Infinity, recentCo
       if (keywordScore || factScore) scoreById.set(fact.id, keywordScore + factScore);
     }
   }
+  // With sentence embeddings (fact id -> cosine), fuse the word ranking and the meaning ranking
+  // by reciprocal rank before the rest of the selection runs.
+  if (semantic?.size && !shortSubject) {
+    for (const hit of CrackMatrixEngine.search(ix, query).slice(0, 100)) {
+      if (byId.has(hit.messageId)) scoreById.set(hit.messageId, (scoreById.get(hit.messageId) || 0) + hit.score);
+    }
+    const lexical = [...scoreById].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+    const meaning = [...semantic].filter(([id]) => byId.has(id)).sort((a, b) => b[1] - a[1]).slice(0, 40).map(([id]) => id);
+    const scale = Math.max(1, ...scoreById.values());
+    const fused = new Map();
+    for (const ranking of [lexical, meaning]) ranking.forEach((id, rank) => fused.set(id, (fused.get(id) || 0) + 1 / (60 + rank)));
+    const top = Math.max(...fused.values());
+    scoreById.clear();
+    for (const [id, value] of fused) scoreById.set(id, scale * value / top);
+  }
   // The draft decides what is relevant. The latest reply and the people in the scene only
   // add a few supporting memories: they must never outrank or crowd out a match for the draft.
   const contextScore = new Map();
   const scene = new Set();
   if (!shortSubject) {
-    for (const hit of CrackMatrixEngine.search(ix, query).slice(0, 100)) {
+    if (!semantic?.size) for (const hit of CrackMatrixEngine.search(ix, query).slice(0, 100)) {
       if (byId.has(hit.messageId)) scoreById.set(hit.messageId, (scoreById.get(hit.messageId) || 0) + hit.score);
     }
     if (recentContext.trim()) {
@@ -551,6 +566,31 @@ function nanoMemoryCards(chatId, facts, query, recentCutoff = Infinity, recentCo
     id: `nano:${fact.id}`, title: fact.keyword,
     content: fact.fact, turn: fact.turn, who: mergeNameVariants(fact.who || []), why, enabled: true
   }));
+}
+
+// --- Meaning search (optional sentence embeddings in the offscreen document) ---
+const SEMANTIC_TIMEOUT_MS = 400;
+const semanticIndexed = new Map();
+
+async function semanticScores(collection, query, items) {
+  if (!items.length || !String(query).trim() || !(await ensureOffscreen())) return null;
+  // Index in the background whenever the set changes; the vectors are cached by text.
+  const signature = `${items.length}:${items[0]?.id}:${items.at(-1)?.id}`;
+  if (semanticIndexed.get(collection) !== signature) {
+    semanticIndexed.set(collection, signature);
+    chrome.runtime.sendMessage({ type: 'EMBED_INDEX', target: 'offscreen', chatId: collection, items })
+      .then(result => { if (!result?.success) semanticIndexed.delete(collection); })
+      .catch(() => semanticIndexed.delete(collection));
+  }
+  let timer;
+  const result = await Promise.race([
+    chrome.runtime.sendMessage({ type: 'EMBED_RANK', target: 'offscreen', chatId: collection, query, limit: 80 }).catch(() => null),
+    new Promise(resolve => { timer = setTimeout(() => resolve(null), SEMANTIC_TIMEOUT_MS); })
+  ]).finally(() => clearTimeout(timer));
+  // The offscreen document may have restarted and lost the in-memory vectors: index again.
+  if (result?.success && result.indexed < items.length / 2) semanticIndexed.delete(collection);
+  if (!result?.success || !result.results?.length) return null;
+  return new Map(result.results.map(hit => [hit.id, hit.score]));
 }
 
 // --- What the conversation is about ---
@@ -1429,6 +1469,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })().catch(error => sendResponse({ success: false, error: String(error.message || error) }));
     return true;
   }
+  if (msg.type === 'SEMANTIC_STATUS' || msg.type === 'SEMANTIC_PREPARE') {
+    (async () => {
+      if (!(await ensureOffscreen())) { sendResponse({ success: false, error: '오프스크린 문서를 만들지 못했습니다.' }); return; }
+      const type = msg.type === 'SEMANTIC_STATUS' ? 'EMBED_STATUS' : 'EMBED_PREPARE';
+      if (type === 'EMBED_PREPARE') {
+        // Downloading takes minutes; answer at once and let the settings page poll the status.
+        chrome.runtime.sendMessage({ type, target: 'offscreen' }).catch(() => {});
+        sendResponse({ success: true, state: 'loading' });
+        return;
+      }
+      sendResponse(await chrome.runtime.sendMessage({ type, target: 'offscreen' }).catch(error => ({ success: false, error: String(error) })));
+    })();
+    return true;
+  }
   if (msg.type === 'GET_LLM_STATUS') {
     (async () => {
       const hosts = await llmHosts();
@@ -1564,10 +1618,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       `pins:${chatId}`,
       'llmIntervention',
       'llmIntent',
+      'semanticSearch',
       `memoryMerge:${chatId}`
     ];
 
-    chrome.storage.local.get(keys, data => {
+    chrome.storage.local.get(keys, async data => {
       const isAuto = data[`auto:${chatId}`] !== false;
       if (!isAuto) {
         sendResponse({ success: true, selected: [], content: outgoing, userNote: '', reason: '자동 주입이 꺼져 있습니다.' });
@@ -1600,9 +1655,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const nanoFacts = effectiveNanoFacts(data[`nanoMemory:${chatId}`]?.facts,
         data[`nanoOverrides:${chatId}`] || {}, data[`dropKw:${chatId}`] || []);
       // LLM on: keyword-card memory. LLM off: original passages found by search (below).
-      if (useNano) summaries.unshift(...nanoMemoryCards(chatId, nanoFacts, outgoing, cutoff, recentContext, recentText,
-        data[`memoryMerge:${chatId}`] || {}, conversationTopics(nanoFacts, outgoing, all, intentCache.get(`${chatId}\u0000${outgoing.trim()}`))));
       if (!useNano && mem && !mem.pix) mem.pix = CrackMatrixEngine.buildPassageIndex(all);
+      // Optional meaning search: the draft is embedded once and compared with vectors indexed
+      // in the background; if that takes too long the prompt goes out with word search alone.
+      const semantic = data.semanticSearch ? await Promise.all([
+        semanticScores(`lore:${chatId}`, outgoing, lores.map((lore, i) => ({ id: String(lore.id || lore.title || `#${i}`), text: `${lore.title || ''} ${(lore.keywords || []).join(' ')} ${lore.content || ''}` }))),
+        useNano
+          ? semanticScores(`facts:${chatId}`, outgoing, nanoFacts.map(fact => ({ id: fact.id, text: `${fact.keyword} ${fact.fact}` })))
+          : semanticScores(`passages:${chatId}`, outgoing, (mem?.pix?.units || []).map(unit => ({ id: unit.unitId, text: unit.text })))
+      ]) : [null, null];
+      if (useNano) summaries.unshift(...nanoMemoryCards(chatId, nanoFacts, outgoing, cutoff, recentContext, recentText,
+        data[`memoryMerge:${chatId}`] || {}, conversationTopics(nanoFacts, outgoing, all, intentCache.get(`${chatId}\u0000${outgoing.trim()}`)), semantic[1]));
 
       // Pinned turns are the user's explicit "remember this"; they go ahead of retrieved memory.
       summaries.unshift(...pinnedCards(data[`pins:${chatId}`] || []));
@@ -1613,6 +1676,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         summaryCards: summaries,
         budget,
         contextQuery: combinedQuery,
+        loreFacts: nanoFacts,
+        loreSemantic: semantic[0],
+        passageSemantic: useNano ? null : semantic[1],
+        loreRecentContext: recentContext,
+        currentTurn: all.length + 1,
         passageIndex: useNano ? null : mem?.pix,
         passageQuery: outgoing,
         passageContext: recentContext,
@@ -1631,6 +1699,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         intentReady: !useNano || !nanoFacts.length || data.llmIntent === false || !needsIntent(outgoing, nanoFacts)
           || intentCache.has(`${chatId}\u0000${outgoing.trim()}`),
         mode: useNano ? 'nano' : 'local',
+        semantic: Boolean(data.semanticSearch) && Boolean(semantic[0] || semantic[1]),
         res
       });
 

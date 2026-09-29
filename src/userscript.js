@@ -241,7 +241,7 @@
     const lores = getLores(id);
     const query = editorText.trim();
     if (!mem) {
-      liveMatch = { selected: [], selectedLore: E.matchLore(lores, query), selectedMemory: [], query };
+      liveMatch = { selected: [], selectedLore: E.selectLore(lores, query), selectedMemory: [], query };
       updateBadge();
       renderLiveCards();
       return;

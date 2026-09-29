@@ -878,3 +878,36 @@ test('the header tells the model the current turn, and names in brackets are cle
   assert.deepEqual(Array.from(merge(['🌟「지평선을 그은자」😐', '박하린😐', '도윤', '김도윤', '로완', '로완 리드'])),
     ['지평선을 그은자', '박하린', '김도윤', '로완']);
 });
+
+test('meaning search: embedding ranks join word search, and a slow answer does not hold the message', async () => {
+  const { data, context, dispatch } = workerHarness();
+  data.set('llmIntervention', false);
+  data.set('semanticSearch', true);
+  const all = [];
+  for (let i = 0; i < 20; i++) {
+    all.push({ id: `u${i}`, role: 'user', text: `크리는 ${i}번째로 복도를 걷는다.` });
+    all.push({ id: `a${i}`, role: 'assistant', text: i === 3
+      ? '글레이드 가문의 메이드는 주인에게 애정을 품지 않는 것이 규율이었다. 샤일은 그 규율을 지켜 왔다.'
+      : `크리는 ${i}번째 복도를 지나갔다. 창밖에는 비가 내렸다.` });
+  }
+  vm.runInContext('activeMemory', context).set('room', { chatId: 'room', all, units: [], ix: null });
+  context.chrome.offscreen = { createDocument: async () => {} };
+  let delay = 0;
+  context.chrome.runtime.sendMessage = async message => {
+    if (message.type === 'EMBED_INDEX') return { success: true, count: message.items.length };
+    if (message.type !== 'EMBED_RANK') return undefined;
+    if (!message.chatId.startsWith('passages:')) return { success: true, results: [], indexed: 0 };
+    const pix = vm.runInContext('activeMemory', context).get('room').pix;
+    const target = pix.units.find(unit => unit.text.includes('글레이드 가문'));
+    await new Promise(resolve => setTimeout(resolve, delay));
+    return { success: true, indexed: pix.units.length, results: [{ id: target.unitId, score: 0.9 },
+      ...pix.units.filter(unit => unit !== target).slice(0, 20).map(unit => ({ id: unit.unitId, score: 0.7 }))] };
+  };
+  const draft = '샤일은 왜 나한테 마음을 안 보여줄까';
+  const fast = await dispatch({ type: 'GET_PREPARED_CONTEXT', chatId: 'room', outgoing: draft });
+  assert.equal(fast.semantic, true);
+  assert.match(fast.content, /글레이드 가문의 메이드/);
+  delay = 800;
+  const slow = await dispatch({ type: 'GET_PREPARED_CONTEXT', chatId: 'room', outgoing: draft });
+  assert.equal(slow.semantic, false, 'went out with word search alone');
+});

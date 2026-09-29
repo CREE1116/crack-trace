@@ -1,8 +1,12 @@
 // ==UserScript==
 // @name         Trace Lite
 // @namespace    local.crack.ubis-memory
-// @version      0.8.0
+// @version      0.9.0
 // @description  Deterministic local retrieval of old Crack messages. No AI API.
+// @homepageURL  https://github.com/CREE1116/crack-trace
+// @supportURL   https://github.com/CREE1116/crack-trace/issues
+// @updateURL    https://raw.githubusercontent.com/CREE1116/crack-trace/main/dist/trace-lite.user.js
+// @downloadURL  https://raw.githubusercontent.com/CREE1116/crack-trace/main/dist/trace-lite.user.js
 // @match        https://crack.wrtn.ai/*
 // @run-at       document-start
 // @connect      crack-api.wrtn.ai
@@ -261,7 +265,7 @@ const CrackMatrixEngine = (() => {
     return vec;
   }
 
-  function index(units) {
+  function index(units, options = {}) {
     const docs = units.map(unit => {
       const tf = new Map();
       for (const term of terms(unit.text)) tf.set(term, (tf.get(term) || 0) + 1);
@@ -275,7 +279,7 @@ const CrackMatrixEngine = (() => {
     for (const doc of docs) {
       for (const match of doc.unit.text.matchAll(/💬\s*([가-힣]{2,8})\s*\|/g)) entities.add(match[1].toLowerCase());
     }
-    const lsa = computeLSA(docs, df, 8);
+    const lsa = options.lsa === false ? null : computeLSA(docs, df, 8);
     return { docs, df, entities, avg: Math.max(1, avg), lsa };
   }
 
@@ -350,84 +354,216 @@ const CrackMatrixEngine = (() => {
   }
 
   // --- Hybrid Keyword + Semantic Vector Lore Matching ---
-  function matchLore(loreList, query, options = {}) {
-    if (!Array.isArray(loreList) || !loreList.length) return [];
-    const budget = options.budget ?? 650;
-    const outgoing = String(query || '').normalize('NFKC').toLowerCase();
-    const queryTermList = terms(outgoing);
-    const queryTermSet = new Set(queryTermList);
+  const lorePredicatePatterns = {
+    sibling: /언니|누나|동생|형제|자매|가족/,
+    wield: /무기|검은|검을|창은|쓰는|사용|휘두/,
+    entrust: /맡겼|맡긴|맡기|맡김/,
+    receive: /받은|받았|얻은|얻었/,
+    store: /보관|맡아둔|맡아 둔/,
+    hide: /숨긴|숨겨|숨겼|감춘/,
+    open: /열 수|열어|여는|봉인 해제/,
+    signal: /신호|봉화|연기/,
+    heal: /치료|회복|출혈|상처/,
+    poison: /독|마비/,
+    prove: /증명|진위|허가/,
+    allow: /통행|건너|넘으/,
+    trade: /거래|교환/
+  };
+  const loreNorm = value => String(value || '').normalize('NFKC').toLowerCase().trim();
+  const loreVerbs = value => new Set(Object.entries(lorePredicatePatterns)
+    .filter(([, pattern]) => pattern.test(String(value || ''))).map(([name]) => name));
+  const loreAdd = (map, key, weight) => map.set(key, (map.get(key) || 0) + weight);
+  const loreCosine = (a, b) => {
+    let dot = 0;
+    for (const [key, weight] of a) dot += weight * (b.get(key) || 0);
+    return dot;
+  };
+  const loreUnitVector = vector => {
+    const length = Math.hypot(...vector.values()) || 1;
+    for (const [key, weight] of vector) vector.set(key, weight / length);
+    return vector;
+  };
+  let loreVectorCache = null;
+  let loreGraphCache = null;
+  function loreCorpus(lore) {
+    return `${lore.title || ''} ${(Array.isArray(lore.keywords) ? lore.keywords : String(lore.keywords || '').split(',')).join(' ')} ${lore.content || ''}`;
+  }
+  function loreCache(items) {
+    const signature = JSON.stringify(items.map(item => [item.id, item.title, item.keywords, item.content, item.relations]));
+    if (loreVectorCache?.signature === signature) return loreVectorCache;
+    const units = items.map((item, order) => ({
+      unitId: `lore:${order}`, messageId: String(order), role: 'lore', pos: 0,
+      order, text: loreCorpus(item), len: loreCorpus(item).length
+    }));
+    const ix = index(units, { lsa: false });
+    loreVectorCache = { signature, ix };
+    return loreVectorCache;
+  }
+  function loreRelations(items, facts, turn) {
+    const edges = [];
+    for (const item of items) for (const triple of item.relations || []) {
+      if (!Array.isArray(triple) || triple.length !== 3) continue;
+      const [subject, rawPredicate, object] = triple.map(value => String(value || '').trim());
+      const predicate = loreVerbs(rawPredicate).values().next().value || rawPredicate;
+      if (subject && predicate && object) edges.push({ subject, predicate, object, turn: 0 });
+    }
+    const byAlias = new Map();
+    for (const item of items) {
+      const names = [item.title, ...(Array.isArray(item.keywords) ? item.keywords : [])];
+      for (const name of names) {
+        const alias = loreNorm(name);
+        if (alias.length < 2) continue;
+        if (!byAlias.has(alias)) byAlias.set(alias, new Set());
+        byAlias.get(alias).add(item.title);
+      }
+    }
+    const escapeRegex = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const aliases = [...byAlias.keys()].sort((a, b) => b.length - a.length);
+    const aliasPattern = aliases.length ? new RegExp(aliases.map(escapeRegex).join('|'), 'g') : null;
+    for (const fact of facts || []) {
+      const factTurn = Number(fact.turn) || 0;
+      if (Number.isFinite(turn) && factTurn > turn) continue;
+      const subject = String(fact.keyword || '').trim();
+      const verbs = loreVerbs(fact.fact);
+      if (!subject || !verbs.size || !aliasPattern) continue;
+      const targets = new Set();
+      for (const match of loreNorm(fact.fact).matchAll(aliasPattern)) {
+        for (const title of byAlias.get(match[0]) || []) targets.add(title);
+      }
+      for (const title of targets) {
+        if (loreNorm(subject) === loreNorm(title)) continue;
+        edges.push({ subject, predicate: verbs.values().next().value, object: title, turn: factTurn });
+      }
+    }
+    return edges;
+  }
+  function loreGraph(items, facts, turn) {
+    const signature = JSON.stringify([
+      items.map(item => [item.id, item.title, item.keywords, item.relations]),
+      (facts || []).map(fact => [fact.id, fact.keyword, fact.fact, fact.turn]), turn
+    ]);
+    if (loreGraphCache?.signature === signature) return loreGraphCache;
+    const edges = loreRelations(items, facts, turn);
+    const entities = [...new Set([...items.map(item => item.title), ...edges.flatMap(edge => [edge.subject, edge.object])])]
+      .filter(name => String(name).length >= 2);
+    const vectors = items.map(item => {
+      const doc = new Map();
+      loreAdd(doc, `e:${loreNorm(item.title)}`, 2);
+      for (const triple of item.relations || []) {
+        if (!Array.isArray(triple) || triple.length !== 3) continue;
+        const [subject, rawPredicate, object] = triple;
+        const predicate = loreVerbs(rawPredicate).values().next().value || rawPredicate;
+        loreAdd(doc, `e:${loreNorm(subject)}`, 0.5);
+        loreAdd(doc, `e:${loreNorm(object)}`, 0.5);
+        loreAdd(doc, `p:${predicate}`, 0.5);
+        loreAdd(doc, `sp:${loreNorm(subject)}:${predicate}`, 1.5);
+      }
+      return loreUnitVector(doc);
+    });
+    loreGraphCache = { signature, edges, entities, vectors };
+    return loreGraphCache;
+  }
+  // BM25 over the lore text, or the relation vector (lore relations plus remembered facts).
+  function scoreLore(items, query, { mode, userQuery = query, recentContext = '', facts = [], turn = Infinity } = {}) {
+    const scores = new Map();
+    if (mode === 'bm25') {
+      for (const hit of search(loreCache(items).ix, query)) scores.set(Number(hit.messageId), hit.score);
+      return scores;
+    }
+    const { edges, entities, vectors } = loreGraph(items, facts, turn);
+    const mentioned = text => new Set(entities.filter(name => loreNorm(text).includes(loreNorm(name))));
+    const direct = mentioned(userQuery);
+    const recent = mentioned(recentContext);
+    const verbs = loreVerbs(userQuery);
+    const targets = new Map();
+    for (const edge of edges) {
+      if (!direct.has(edge.subject) || !verbs.has(edge.predicate)) continue;
+      const weight = edge.turn ? Math.exp(-(Math.max(0, turn - edge.turn)) / 50) : 1;
+      targets.set(loreNorm(edge.object), Math.max(targets.get(loreNorm(edge.object)) || 0, weight));
+    }
+    const q = new Map();
+    for (const entity of direct) loreAdd(q, `e:${loreNorm(entity)}`, 1);
+    for (const entity of recent) loreAdd(q, `e:${loreNorm(entity)}`, 0.45);
+    for (const verb of verbs) loreAdd(q, `p:${verb}`, 0.6);
+    for (const entity of direct) for (const verb of verbs) loreAdd(q, `sp:${loreNorm(entity)}:${verb}`, 1.2);
+    for (const [entity, weight] of targets) loreAdd(q, `e:${entity}`, 1.8 * weight);
+    loreUnitVector(q);
+    items.forEach((item, i) => scores.set(i, loreCosine(q, vectors[i])));
+    return scores;
+  }
+
+  const loreKey = (item, index) => String(item.id || item.title || `#${index}`);
+
+  // One lore selector (measured on test/fixtures/lore-benchmark.json):
+  //  1. "always" lore, and lore whose trigger keyword is in the player's draft, is always included
+  //     and gets the budget first;
+  //  2. the rest must pass BM25 (> 5), the relation vector (> 0.15) or carry a keyword from the
+  //     recent scene; everything admitted is ordered by reciprocal-rank fusion of those rankings,
+  //     so "아린이 쓰는 무기" puts 월광검 before 아린 even though 아린 was named;
+  //  3. with sentence embeddings (semantic: key -> cosine) that ranking joins the fusion, and the
+  //     closest lore is admitted when it stands clearly above the rest (top − median > 0.04).
+  function selectLore(loreList, query, { budget = 650, userQuery = query, recentContext = '', facts = [], turn = Infinity, semantic = null } = {}) {
+    const items = (Array.isArray(loreList) ? loreList : []).filter(item => item && item.content && item.enabled !== false);
+    if (!items.length) return [];
+    const lower = value => String(value || '').normalize('NFKC').toLowerCase();
+    const draft = lower(userQuery);
+    const text = lower(query);
+    const draftTerms = new Set(terms(draft));
+    const textTerms = new Set(terms(text));
+    const keywordsOf = item => (Array.isArray(item.keywords) ? item.keywords : String(item.keywords || '').split(','))
+      .map(kw => lower(kw).trim()).filter(Boolean);
+    const why = new Map();
+    const forced = [];
+    // A trigger keyword in the player's own draft is decisive. One that only appears in the
+    // surrounding context (the last reply) is a candidate ranked with the other evidence.
+    const contextHits = [];
+    items.forEach((item, i) => {
+      if (item.alwaysInclude) { forced.push(i); why.set(i, '상시'); return; }
+      const inDraft = keywordsOf(item).filter(kw => draft.includes(kw) || draftTerms.has(kw));
+      if (inDraft.length) { forced.push(i); why.set(i, `키워드: ${inDraft.join(', ')}`); return; }
+      const inContext = keywordsOf(item).filter(kw => text.includes(kw) || textTerms.has(kw));
+      if (inContext.length && item.triggerType === 'keyword') { forced.push(i); why.set(i, `키워드: ${inContext.join(', ')}`); return; }
+      if (inContext.length) { contextHits.push(i); why.set(i, `키워드(직전 장면): ${inContext.join(', ')}`); }
+    });
+    // "키워드로만" lore never enters by search.
+    const searchable = items.map((item, i) => i).filter(i => !forced.includes(i) && items[i].triggerType !== 'keyword');
+    const options = { userQuery, recentContext, facts, turn };
+    const rankBy = (scores, floor) => searchable.filter(i => (scores.get(i) || 0) > floor).sort((a, b) => scores.get(b) - scores.get(a));
+    const bm25Scores = scoreLore(items, query, { ...options, mode: 'bm25' });
+    const relationScores = scoreLore(items, query, { ...options, mode: 'relation' });
+    const bm25 = rankBy(bm25Scores, 5);
+    const relation = rankBy(relationScores, 0.15);
+    const admitted = new Set([...bm25, ...relation, ...contextHits]);
+    // Keyword hits are ranked by the same evidence as everything else; the keyword itself only
+    // decides that they are in, not where.
+    const pool = [...new Set([...forced.filter(i => !items[i].alwaysInclude), ...admitted])];
+    const rankIn = scores => pool.filter(i => (scores.get(i) || 0) > 0).sort((a, b) => scores.get(b) - scores.get(a));
+    const rankings = [rankIn(bm25Scores), rankIn(relationScores)];
+    if (semantic?.size && searchable.length) {
+      const cosines = searchable.map(i => [i, semantic.get(loreKey(items[i], i)) ?? -1]).sort((a, b) => b[1] - a[1]);
+      rankings.push(cosines.map(([i]) => i));
+      const values = cosines.map(([, c]) => c);
+      if (values[0] - values[Math.floor(values.length / 2)] > 0.04) admitted.add(cosines[0][0]);
+    }
+    const fused = new Map();
+    for (const ranking of rankings) ranking.forEach((i, rank) => { if (admitted.has(i) || forced.includes(i)) fused.set(i, (fused.get(i) || 0) + 1 / (60 + rank)); });
+    for (const i of admitted) if (!why.has(i)) why.set(i, [bm25.includes(i) && '내용', relation.includes(i) && '관계', semantic?.size && '의미'].filter(Boolean).join('·') || '의미');
+    const byFusion = (a, b) => (items[b].alwaysInclude ? 1 : 0) - (items[a].alwaysInclude ? 1 : 0) || (fused.get(b) || 0) - (fused.get(a) || 0);
+    const order = [...[...forced].sort(byFusion), ...[...admitted].filter(i => !forced.includes(i)).sort(byFusion)];
     const selected = [];
     let used = 0;
-
-    const scored = [];
-    for (const item of loreList) {
-      if (!item || !item.content || item.enabled === false) continue;
+    for (const i of order) {
+      const item = items[i];
       const title = String(item.title || '로어').trim();
-      const rawKeywords = Array.isArray(item.keywords)
-        ? item.keywords
-        : String(item.keywords || '').split(',').map(s => s.trim()).filter(Boolean);
-
-      let matched = false;
-      const matchedKeywords = [];
-      let matchScore = 0;
-
-      if (item.alwaysInclude) {
-        matched = true;
-        matchScore += 100;
-        matchedKeywords.push('(상시)');
-      } else {
-        // 1. Keyword Check
-        for (const kw of rawKeywords) {
-          const normKw = kw.normalize('NFKC').toLowerCase();
-          if (!normKw) continue;
-          if (outgoing.includes(normKw) || queryTermSet.has(normKw)) {
-            matched = true;
-            matchedKeywords.push(kw);
-            matchScore += 12;
-          }
-        }
-
-        // 2. Semantic Vector Similarity Check
-        const triggerType = item.triggerType || 'both';
-        if ((triggerType === 'semantic' || triggerType === 'both') && !matched) {
-          const loreCorpus = `${title} ${rawKeywords.join(' ')} ${item.content}`;
-          const loreTerms = terms(loreCorpus);
-          const loreTermSet = new Set(loreTerms);
-          let commonCount = 0;
-          for (const qt of queryTermList) {
-            if (loreTermSet.has(qt)) commonCount++;
-          }
-          if (commonCount >= 2 || (queryTermList.length <= 4 && commonCount >= 1 && title.toLowerCase().includes(query.trim().toLowerCase()))) {
-            matched = true;
-            matchedKeywords.push('(시맨틱)');
-            matchScore += commonCount * 2.5;
-          }
-        }
-      }
-
-      if (matched) {
-        scored.push({ item, title, content: String(item.content).trim(), matchedKeywords, matchScore });
-      }
-    }
-
-    scored.sort((a, b) => b.matchScore - a.matchScore);
-
-    for (const { item, title, content, matchedKeywords } of scored) {
+      const content = String(item.content).trim();
       const line = cacheLine('설정', title, content);
-      const separator = selected.length ? 1 : 0;
-      if (used + line.length + separator > budget) continue;
-
-      selected.push({
-        ...item,
-        type: 'lore',
-        title,
-        matchedKeywords,
-        line,
-        text: `${title}: ${content}`
-      });
-      used += line.length + separator;
+      const cost = line.length + (selected.length ? 1 : 0);
+      if (used + cost > budget) continue;
+      selected.push({ ...item, type: 'lore', title, why: why.get(i), matchedKeywords: [why.get(i)], line, text: `${title}: ${content}`, _i: i });
+      used += cost;
     }
-    return selected;
+    // Budget went to the guaranteed lore first; what is shown follows the fused ranking.
+    return selected.sort((a, b) => byFusion(a._i, b._i)).map(({ _i, ...item }) => item);
   }
 
   function contextFor(ix, messages, query, options = {}) {
@@ -483,10 +619,15 @@ const CrackMatrixEngine = (() => {
     summaryCards = [],
     budget = 2000,
     contextQuery = query,
+    loreFacts = [],
+    loreSemantic = null,
+    loreRecentContext = '',
+    currentTurn = Infinity,
     injectUserNoteToPrompt = false,
     passageIndex = null,
     passageQuery = query,
     passageContext = '',
+    passageSemantic = null,
     maxTurn = Infinity
   } = {}) {
     const totalBudget = Math.max(0, budget - USER_PREFIX.length - USER_SUFFIX.length - query.length);
@@ -539,7 +680,10 @@ const CrackMatrixEngine = (() => {
     finalSelected.splice(finalSelected.length - selectedSummaries.length, selectedSummaries.length, ...selectedSummaries);
 
     // 3. Lorebook Items (Hybrid Keyword + Semantic Vector)
-    const selectedLore = matchLore(loreList, contextQuery, { budget: Math.min(600, Math.floor(remaining * 0.55)) });
+    const selectedLore = selectLore(loreList, contextQuery, {
+      budget: Math.min(600, Math.floor(remaining * 0.55)),
+      userQuery: query, recentContext: loreRecentContext, facts: loreFacts, turn: currentTurn, semantic: loreSemantic
+    });
     for (const l of selectedLore) {
       const sep = finalSelected.length ? 1 : 0;
       if (l.line.length + sep <= remaining) {
@@ -550,7 +694,7 @@ const CrackMatrixEngine = (() => {
 
     // 4. Original passages (no-LLM mode) or legacy chunks
     const memoryResult = passageIndex
-      ? { selected: passageSearch(passageIndex, passageQuery, { contextQuery: passageContext, budget: remaining, maxTurn }) }
+      ? { selected: passageSearch(passageIndex, passageQuery, { contextQuery: passageContext, budget: remaining, maxTurn, semantic: passageSemantic }) }
       : ix ? contextFor(ix, messages, contextQuery, { budget: remaining }) : { selected: [] };
     const selectedMemory = memoryResult.selected || [];
     for (const m of selectedMemory) {
@@ -1035,7 +1179,7 @@ const CrackMatrixEngine = (() => {
 
   // The draft decides what is relevant; the latest reply only supports. Passages from the
   // live window (turn >= maxTurn) are skipped: Crack already shows them to the model.
-  function passageSearch(pix, query, { contextQuery = '', budget = 1200, maxTurn = Infinity, perTurn = 2 } = {}) {
+  function passageSearch(pix, query, { contextQuery = '', budget = 1200, maxTurn = Infinity, perTurn = 2, semantic = null } = {}) {
     if (!pix?.units?.length || budget < 60) return [];
     const scores = new Map();
     for (const hit of search(pix.ix, query).slice(0, 60)) {
@@ -1052,6 +1196,18 @@ const CrackMatrixEngine = (() => {
       for (const hit of context) scores.set(hit.unitId, (scores.get(hit.unitId) || 0) + 0.3 * (best || bestContext) * hit.score / (bestContext || 1));
     }
     const byId = new Map(pix.units.map(unit => [unit.unitId, unit]));
+    // With sentence embeddings (unitId -> cosine), fuse the word ranking and the meaning ranking
+    // by reciprocal rank; measured on an exported chat: top-10 hits 17 -> 20 of 30.
+    if (semantic?.size) {
+      const lexical = [...scores].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+      const meaning = [...semantic].filter(([id]) => byId.has(id)).sort((a, b) => b[1] - a[1]).slice(0, 60).map(([id]) => id);
+      const scale = Math.max(1, ...scores.values());
+      const fused = new Map();
+      for (const ranking of [lexical, meaning]) ranking.forEach((id, rank) => fused.set(id, (fused.get(id) || 0) + 1 / (60 + rank)));
+      scores.clear();
+      const top = Math.max(...fused.values());
+      for (const [id, value] of fused) scores.set(id, scale * value / top);
+    }
     const names = pix.names || new Set();
     // Names in the draft: passages about that person, and above all their own lines, come first.
     const draftNames = [...names].filter(name => query.includes(name));
@@ -1566,7 +1722,7 @@ const CrackMatrixEngine = (() => {
     index,
     search,
     groupByMessage,
-    matchLore,
+    selectLore,
     contextFor,
     contextWithAll,
     contextWithSummaryAndLore: (ix, msgs, q, l, s, o) => contextWithAll(ix, msgs, q, { ...o, loreList: l, summaryCards: s }),
@@ -1845,7 +2001,7 @@ var CrackMemoryEngine = CrackMatrixEngine;
     const lores = getLores(id);
     const query = editorText.trim();
     if (!mem) {
-      liveMatch = { selected: [], selectedLore: E.matchLore(lores, query), selectedMemory: [], query };
+      liveMatch = { selected: [], selectedLore: E.selectLore(lores, query), selectedMemory: [], query };
       updateBadge();
       renderLiveCards();
       return;

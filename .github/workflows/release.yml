@@ -1,0 +1,40 @@
+name: Release
+
+# Push a tag that matches extension/manifest.json (e.g. v0.9.0) to publish:
+#   - trace-extension-vX.Y.Z.zip  (unzip, then load the `extension` folder)
+#   - trace-lite.user.js          (Tampermonkey; installed copies update from main)
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Tag matches the manifest version
+        run: |
+          version=$(node -p "require('./extension/manifest.json').version")
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != manifest $version"; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - run: node build.mjs --check
+      - run: node --test test/*.test.mjs
+      - name: Package
+        run: |
+          zip -qr "trace-extension-v$VERSION.zip" extension
+          cp dist/trace-lite.user.js trace-lite.user.js
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="$(sed -n "/^## v$VERSION/,/^## v/p" CHANGELOG.md 2>/dev/null | sed '1d;$d')"
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            && gh release upload "$GITHUB_REF_NAME" "trace-extension-v$VERSION.zip" trace-lite.user.js --clobber \
+            || gh release create "$GITHUB_REF_NAME" "trace-extension-v$VERSION.zip" trace-lite.user.js \
+                 --title "Trace $GITHUB_REF_NAME" --notes "${notes:-Trace $GITHUB_REF_NAME}"

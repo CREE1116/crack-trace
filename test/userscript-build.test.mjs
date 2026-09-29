@@ -8,10 +8,13 @@ const sharedEngine = readFileSync(new URL('../extension/engine/engine.js', impor
 const runtime = readFileSync(new URL('../src/userscript.js', import.meta.url), 'utf8');
 
 test('Trace Lite ships the shared engine and current userscript', () => {
-  assert.match(built, /\/\/ @version\s+0\.8\.0/);
+  const { version } = JSON.parse(readFileSync(new URL('../extension/manifest.json', import.meta.url), 'utf8'));
+  assert.match(built, new RegExp(`// @version\\s+${version.replace(/\./g, '\\.')}\n`));
+  assert.match(built, /\/\/ @updateURL\s+https:\/\/raw\.githubusercontent\.com\/CREE1116\/crack-trace\/main\/dist\/trace-lite\.user\.js/);
+  assert.match(built, /\/\/ @downloadURL\s+https:\/\/raw\.githubusercontent\.com\//);
   assert.ok(built.includes(sharedEngine));
   assert.ok(built.endsWith(runtime));
-  assert.ok(!runtime.includes('contextWithLore'));
+  assert.ok(!runtime.includes('contextWithLore') && !runtime.includes('E.matchLore('));
   assert.ok(runtime.includes('E.buildPassageIndex'));
   assert.ok(runtime.includes('E.MARKERS'));
 });
