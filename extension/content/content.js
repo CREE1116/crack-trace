@@ -1,4 +1,4 @@
-// LoreCache - Comprehensive Client Controller (Manifest V3)
+// Trace - Comprehensive Client Controller (Manifest V3)
 (() => {
   'use strict';
 
@@ -797,7 +797,7 @@
     }
   };
 
-  // --- 6. Unified Master Modal Controller (LoreCache Console) ---
+  // --- 6. Unified Master Modal Controller (Trace Console) ---
   let currentDeckFilter = 'all';
 
   function openMasterModal(activeTab = 'state', extraOpts = null) {
@@ -811,8 +811,8 @@
         <div class="cm-modal-box master-modal">
           <div class="cm-modal-header">
             <div class="cm-modal-title-group">
-              <img class="cm-modal-logo" src="${chrome.runtime.getURL('icons/lorecache.svg')}" alt="" width="28" height="28">
-              <span class="cm-modal-title">LoreCache</span>
+              <img class="cm-modal-logo" src="${chrome.runtime.getURL('icons/trace.svg')}" alt="" width="28" height="28">
+              <span class="cm-modal-title">Trace</span>
               <span class="cm-modal-room-badge" id="cm-master-room-badge">대화방 연결됨</span>
             </div>
             <button class="cm-modal-close" type="button" title="닫기 (ESC)">×</button>

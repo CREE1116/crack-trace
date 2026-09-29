@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="LoreCache">
-  <rect width="128" height="128" rx="29" fill="#171312"/>
-  <path d="M27 94V37L64 69L101 37V94" fill="none" stroke="#FF5948" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="27" cy="37" r="9" fill="#FFF5ED"/>
-  <circle cx="64" cy="69" r="9" fill="#FFF5ED"/>
-  <circle cx="101" cy="37" r="9" fill="#FFF5ED"/>
-  <circle cx="27" cy="94" r="7" fill="#FF5948"/>
-  <circle cx="101" cy="94" r="7" fill="#FF5948"/>
-</svg>

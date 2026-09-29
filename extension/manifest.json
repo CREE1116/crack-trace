@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "LoreCache — 크랙 기억 도우미",
+  "name": "Trace — 크랙 기억 도우미",
   "version": "0.7.0",
   "description": "크랙 대화에서 관련 기억과 로어북을 찾아 입력에 붙이고, 모델 측정 정보를 보여줍니다.",
   "permissions": [
@@ -39,7 +39,7 @@
     "default_path": "sidepanel/sidepanel.html"
   },
   "action": {
-    "default_title": "LoreCache 열기"
+    "default_title": "Trace 열기"
   },
   "icons": {
     "16": "icons/icon16.png",

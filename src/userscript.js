@@ -292,7 +292,7 @@
           }
         }
       } catch (err) {
-        console.warn('[LoreCache Lite] Injection error, falling back to raw:', err);
+        console.warn('[Trace Lite] Injection error, falling back to raw:', err);
       }
       return nativeSend.call(socket, raw);
     }

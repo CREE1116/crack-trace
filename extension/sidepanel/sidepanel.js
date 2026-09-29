@@ -1,4 +1,4 @@
-// LoreCache - Companion Sidepanel Controller
+// Trace - Companion Sidepanel Controller
 (() => {
   'use strict';
 

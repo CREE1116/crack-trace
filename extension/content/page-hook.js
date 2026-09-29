@@ -1,4 +1,4 @@
-// LoreCache - MAIN World WebSocket Interceptor
+// Trace - MAIN World WebSocket Interceptor
 (() => {
   'use strict';
 

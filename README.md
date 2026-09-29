@@ -1,6 +1,6 @@
-# LoreCache
+# Trace
 
-<img src="extension/icons/lorecache.svg" width="80" height="80" alt="LoreCache 로고">
+<img src="extension/icons/trace.svg" width="80" height="80" alt="Trace 로고">
 
 크랙 대화에서 관련 기억과 로어북을 골라 전송 문구에 붙이는 비공식 브라우저 도구입니다. 확장 프로그램은 기억 생성에 브라우저 내장 Gemini Nano를 사용할 수 있고, Tampermonkey 버전은 모델 없이 작동합니다.
 
@@ -37,7 +37,7 @@
 node build.mjs
 ```
 
-생성된 `dist/lorecache-lite.user.js`를 Tampermonkey에 등록한 뒤 크랙 대화방을 엽니다. 브라우저 내장 모델 없이 추출식 기억과 로어북을 사용합니다. 전송 총량은 사용자 입력 포함 2000자입니다.
+생성된 `dist/trace-lite.user.js`를 Tampermonkey에 등록한 뒤 크랙 대화방을 엽니다. 브라우저 내장 모델 없이 추출식 기억과 로어북을 사용합니다. 전송 총량은 사용자 입력 포함 2000자입니다.
 
 ## 개발 확인
 

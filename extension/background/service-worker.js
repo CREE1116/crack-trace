@@ -1,4 +1,4 @@
-// LoreCache - Background Service Worker (Manifest V3)
+// Trace - Background Service Worker (Manifest V3)
 importScripts('../engine/engine.js');
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});

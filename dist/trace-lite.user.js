@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         LoreCache Lite
+// @name         Trace Lite
 // @namespace    local.crack.ubis-memory
 // @version      0.6.0
 // @description  Deterministic local retrieval of old Crack messages. No AI API.
@@ -662,7 +662,7 @@ const CrackMemoryEngine = (() => {
           }
         }
       } catch (err) {
-        console.warn('[LoreCache Lite] Injection error, falling back to raw:', err);
+        console.warn('[Trace Lite] Injection error, falling back to raw:', err);
       }
       return nativeSend.call(socket, raw);
     }

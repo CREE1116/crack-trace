@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const header = `// ==UserScript==
-// @name         LoreCache Lite
+// @name         Trace Lite
 // @namespace    local.crack.ubis-memory
 // @version      0.6.0
 // @description  Deterministic local retrieval of old Crack messages. No AI API.
@@ -17,4 +17,4 @@ const header = `// ==UserScript==
 `;
 const engine = readFileSync(new URL('./src/engine.js', import.meta.url), 'utf8');
 const runtime = readFileSync(new URL('./src/userscript.js', import.meta.url), 'utf8');
-writeFileSync(new URL('./dist/lorecache-lite.user.js', import.meta.url), `${header}\n${engine}\n${runtime}`);
+writeFileSync(new URL('./dist/trace-lite.user.js', import.meta.url), `${header}\n${engine}\n${runtime}`);

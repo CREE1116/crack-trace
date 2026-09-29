@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Trace">
+  <rect width="128" height="128" rx="27" fill="#141111"/>
+  <path d="M18 34 54 43v12L18 47Z" fill="#F7F3EE"/>
+  <path d="M18 63h36v34l-36-9Z" fill="#F7F3EE"/>
+  <path d="m110 34-36 9v12l36-8Z" fill="#F7F3EE"/>
+  <path d="M74 63h36v25l-36 9Z" fill="#F7F3EE"/>
+</svg>

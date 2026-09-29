@@ -1,4 +1,4 @@
-// LoreCache - Hybrid LSA + Vector + BM25 Engine (Manifest V3)
+// Trace - Hybrid LSA + Vector + BM25 Engine (Manifest V3)
 const CrackMatrixEngine = (() => {
   'use strict';
 
