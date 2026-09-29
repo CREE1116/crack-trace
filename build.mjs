@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 const header = `// ==UserScript==
 // @name         Trace Lite
 // @namespace    local.crack.ubis-memory
-// @version      0.6.0
+// @version      0.8.0
 // @description  Deterministic local retrieval of old Crack messages. No AI API.
 // @match        https://crack.wrtn.ai/*
 // @run-at       document-start
@@ -15,6 +15,6 @@ const header = `// ==UserScript==
 // @grant        unsafeWindow
 // ==/UserScript==
 `;
-const engine = readFileSync(new URL('./src/engine.js', import.meta.url), 'utf8');
+const engine = readFileSync(new URL('./extension/engine/engine.js', import.meta.url), 'utf8');
 const runtime = readFileSync(new URL('./src/userscript.js', import.meta.url), 'utf8');
 writeFileSync(new URL('./dist/trace-lite.user.js', import.meta.url), `${header}\n${engine}\n${runtime}`);

@@ -181,12 +181,10 @@
     // Check disk snapshot first for instantaneous loading
     const saved = savedSnapshot(id);
     if (saved && !cached && !forceSync) {
-      const units = E.unitsFromMessages(saved.messages, id);
       const instant = {
         marker: saved.marker,
         all: saved.messages,
-        units,
-        ix: E.index(units),
+        pix: null,
         loadedAt: Date.now(),
         fromDisk: true
       };
@@ -205,12 +203,10 @@
       const marker = JSON.stringify(cleanMsgs.slice(-6).map(m => [m.id, m.text]));
       saveSnapshot(id, marker, cleanMsgs);
 
-      const units = E.unitsFromMessages(cleanMsgs, id);
       const mem = {
         marker,
         all: cleanMsgs,
-        units,
-        ix: E.index(units),
+        pix: null,
         loadedAt: Date.now(),
         fromDisk: false
       };
@@ -222,6 +218,21 @@
     }
   }
 
+  function contextForSend(mem, outgoing, lores, budget) {
+    mem.pix ||= E.buildPassageIndex(mem.all);
+    const lastAssistant = mem.all.filter(m => m.role === 'assistant').at(-1);
+    const recentContext = E.stripOwnBlock(lastAssistant?.text || '').slice(0, 600);
+    return E.contextWithAll(null, mem.all, outgoing, {
+      loreList: lores,
+      budget,
+      contextQuery: recentContext ? `${outgoing} ${recentContext}` : outgoing,
+      passageIndex: mem.pix,
+      passageQuery: outgoing,
+      passageContext: recentContext,
+      maxTurn: Math.max(1, mem.all.length - 1)
+    });
+  }
+
   // --- Live Typing Match ---
   function updateLiveMatch(editorText = '') {
     const id = chatId();
@@ -229,21 +240,15 @@
     const mem = active.get(id);
     const lores = getLores(id);
     const query = editorText.trim();
-    if (!mem || !mem.ix) {
+    if (!mem) {
       liveMatch = { selected: [], selectedLore: E.matchLore(lores, query), selectedMemory: [], query };
       updateBadge();
       renderLiveCards();
       return;
     }
     const prompt = E.stripOwnBlock(query || mem.all.filter(m => m.role === 'user').at(-1)?.text || '');
-    const lastAssistant = mem.all.filter(m => m.role === 'assistant').at(-1)?.text?.slice(0, 300) || '';
-    const contextQuery = lastAssistant ? `${prompt} ${lastAssistant}` : prompt;
     const budget = getBudget(id);
-    const res = E.contextWithLore(mem.ix, mem.all, prompt, lores, {
-      contextQuery,
-      maxOrder: Math.max(0, mem.all.length - 20),
-      budget: E.userContextBudget(prompt, budget)
-    });
+    const res = contextForSend(mem, prompt, lores, budget);
     liveMatch = { ...res, query: prompt };
     updateBadge();
     renderLiveCards();
@@ -265,20 +270,13 @@
     const outgoing = String(frame.payload.message ?? frame.payload.content ?? frame.payload.text ?? '');
     const mem = active.get(id);
     const lores = getLores(id);
-    const lastAssistant = mem?.all?.filter(m => m.role === 'assistant').at(-1)?.text?.slice(0, 300) || '';
-    const contextQuery = lastAssistant ? `${outgoing} ${lastAssistant}` : outgoing;
-
-    // If memory is already indexed, execute instantaneously!
-    if (mem && mem.ix) {
+    // Reuse the passage index after the first preview or send in this room.
+    if (mem) {
       try {
         const budget = getBudget(id);
-        const res = E.contextWithLore(mem.ix, mem.all, outgoing, lores, {
-          contextQuery,
-          maxOrder: Math.max(0, mem.all.length - 20),
-          budget: E.userContextBudget(outgoing, budget)
-        });
+        const res = contextForSend(mem, outgoing, lores, budget);
         if (res.selected.length) {
-          const content = E.composeUser(outgoing, res.selected, budget);
+          const content = E.composeUser(outgoing, res.selected, budget, mem.all.length + 1);
           if (content === outgoing) return nativeSend.call(socket, raw);
           const rewritten = E.replaceFrameMessage(raw, content);
           if (rewritten) {
@@ -300,16 +298,11 @@
     // If not yet indexed, try fast fallback
     busy = true;
     void remember(id, false).then(loadedMem => {
-      if (loadedMem && loadedMem.ix) {
+      if (loadedMem) {
         const budget = getBudget(id);
-        const latestAssistant = loadedMem.all.filter(m => m.role === 'assistant').at(-1)?.text?.slice(0, 300) || '';
-        const res = E.contextWithLore(loadedMem.ix, loadedMem.all, outgoing, lores, {
-          contextQuery: latestAssistant ? `${outgoing} ${latestAssistant}` : outgoing,
-          maxOrder: Math.max(0, loadedMem.all.length - 20),
-          budget: E.userContextBudget(outgoing, budget)
-        });
+        const res = contextForSend(loadedMem, outgoing, lores, budget);
         if (res.selected.length) {
-          const content = E.composeUser(outgoing, res.selected, budget);
+          const content = E.composeUser(outgoing, res.selected, budget, loadedMem.all.length + 1);
           if (content === outgoing) {
             if (socket.readyState === page.WebSocket.OPEN) nativeSend.call(socket, raw);
             return;
@@ -357,7 +350,7 @@
     const entry = {
       at: Date.now(),
       lores: selected.filter(x => x.type === 'lore').map(x => x.title),
-      memories: selected.filter(x => x.type === 'memory').map(x => x.messageId)
+      memories: selected.filter(x => x.type === 'passage').map(x => x.messageId)
     };
     GM_setValue(key(id, 'applied-v2'), JSON.stringify([entry, ...appliedHistory(id)].slice(0, 15)));
     renderAppliedHistory();
@@ -711,7 +704,7 @@
           titleRow.firstChild.after(kwBadge);
         }
       } else {
-        titleRow.innerHTML = `<span>💬 ${item.role === 'user' ? '사용자' : 'AI'} 과거 메시지 (#${item.messageId})</span><span class="cum-badge cum-badge-memory">기억</span>`;
+        titleRow.innerHTML = `<span>💬 ${item.role === 'user' ? '사용자' : 'AI'} 대화 ${item.turn}</span><span class="cum-badge cum-badge-memory">기억</span>`;
       }
 
       const body = document.createElement('div');
@@ -898,14 +891,17 @@
 
   // --- Masking injected block from Chat Bubble UI ---
   function maskInjectedMessages() {
-    const startTag = '<!--CRACK_UBIS_CONTEXT_START-->';
-    const endTag = '<!--CRACK_UBIS_CONTEXT_END-->';
+    E.MARKERS.forEach(([startTag, endTag], index) => maskInjectedBlocks(startTag, endTag, index));
+  }
 
+  function maskInjectedBlocks(startTag, endTag, index) {
+    const maskedKey = `cumMasked${index}`;
+    const containerKey = `cumContainerMasked${index}`;
     // 1. Search for elements containing the start tag
     const allEls = document.querySelectorAll('p, div, span, li');
     for (const el of allEls) {
       if (el.closest('#cum-panel, #cum-btn, script, style')) continue;
-      if (el.dataset.cumMasked) continue;
+      if (el.dataset[maskedKey]) continue;
 
       const txt = el.textContent || '';
       if (!txt.includes(startTag)) continue;
@@ -915,7 +911,7 @@
         const hasChildWithBoth = Array.from(el.children).some(c => c.textContent && c.textContent.includes(startTag) && c.textContent.includes(endTag));
         if (hasChildWithBoth) continue;
 
-        el.dataset.cumMasked = 'true';
+        el.dataset[maskedKey] = 'true';
         const sIdx = txt.indexOf(startTag);
         const eIdx = txt.indexOf(endTag) + endTag.length;
         const cleanText = (txt.substring(0, sIdx) + txt.substring(eIdx)).replace(/^\n+/, '');
@@ -928,11 +924,11 @@
 
       // Case B: Spans across multiple sibling elements (e.g. multiple markdown <p> tags under a chat bubble)
       const container = el.parentElement;
-      if (!container || container.dataset.cumContainerMasked) continue;
+      if (!container || container.dataset[containerKey]) continue;
 
       const containerText = container.textContent || '';
       if (containerText.includes(startTag) && containerText.includes(endTag)) {
-        container.dataset.cumContainerMasked = 'true';
+        container.dataset[containerKey] = 'true';
         let inBlock = false;
         for (const child of Array.from(container.childNodes)) {
           const cText = child.textContent || '';
