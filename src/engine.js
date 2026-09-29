@@ -278,5 +278,77 @@ const CrackMemoryEngine = (() => {
     } catch { return null; }
   }
 
-  return { stripOwnBlock, searchText, terms, unitsFromMessages, index, search, groupByMessage, contextQuery, contextFor, userContextBudget, composeUser, replaceFrameMessage, choose, compose, carrier, parseFrame, START, END };
+  function matchLore(loreList, query, options = {}) {
+    if (!Array.isArray(loreList) || !loreList.length) return [];
+    const budget = options.budget ?? 650;
+    const outgoing = String(query || '').normalize('NFKC').toLowerCase();
+    const queryTermList = terms(outgoing);
+    const queryTermSet = new Set(queryTermList);
+    const scored = [];
+    for (const item of loreList) {
+      if (!item || !item.content || item.enabled === false) continue;
+      const title = String(item.title || '로어').trim();
+      const rawKeywords = Array.isArray(item.keywords)
+        ? item.keywords
+        : String(item.keywords || '').split(',').map(s => s.trim()).filter(Boolean);
+
+      let matched = false;
+      const matchedKeywords = [];
+      let matchScore = 0;
+
+      if (item.alwaysInclude) {
+        matched = true;
+        matchScore += 100;
+        matchedKeywords.push('(상시)');
+      } else {
+        for (const kw of rawKeywords) {
+          const normKw = kw.normalize('NFKC').toLowerCase();
+          if (!normKw) continue;
+          if (outgoing.includes(normKw) || queryTermSet.has(normKw)) {
+            matched = true;
+            matchedKeywords.push(kw);
+            matchScore += 12;
+          }
+        }
+      }
+      if (matched) {
+        scored.push({ ...item, id: item.id, title, content: String(item.content).trim(), matchedKeywords, matchScore });
+      }
+    }
+    scored.sort((a, b) => b.matchScore - a.matchScore);
+    const selected = [];
+    let used = 0;
+    for (const entry of scored) {
+      const line = `{"type":"lore","id":"${entry.id}","title":"${entry.title}","content":"${entry.content}"}`;
+      if (used + line.length > budget) continue;
+      selected.push({ ...entry, line });
+      used += line.length;
+    }
+    return selected;
+  }
+
+  function contextWithLore(ix, messages, query, loreList, options = {}) {
+    const budget = options.budget ?? 2000;
+    const retrievalQuery = options.contextQuery ?? query;
+    const selectedLore = matchLore(loreList, retrievalQuery, { budget: Math.floor(budget * 0.45) });
+    const remaining = Math.max(0, budget - selectedLore.reduce((sum, l) => sum + l.line.length, 0));
+    const ranked = search(ix, retrievalQuery, options);
+    const selectedMemory = [];
+    let used = 0;
+    for (const hit of ranked) {
+      const line = JSON.stringify({ type: 'memory', message_id: hit.messageId, content: hit.text });
+      if (used + line.length > remaining) break;
+      selectedMemory.push({ ...hit, line });
+      used += line.length;
+    }
+    const combined = [...selectedLore, ...selectedMemory];
+    return {
+      selected: combined,
+      selectedLore,
+      selectedMemory,
+      reason: combined.length ? '' : '매칭된 항목 없음'
+    };
+  }
+
+  return { stripOwnBlock, searchText, terms, unitsFromMessages, index, search, groupByMessage, contextQuery, contextFor, userContextBudget, composeUser, replaceFrameMessage, choose, compose, carrier, parseFrame, matchLore, contextWithLore, START, END };
 })();

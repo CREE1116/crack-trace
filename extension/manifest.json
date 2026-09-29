@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "LoreCache — 크랙 기억 도우미",
+  "version": "0.7.0",
+  "description": "크랙 대화에서 관련 기억과 로어북을 찾아 입력에 붙이고, 모델 측정 정보를 보여줍니다.",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "cookies",
+    "sidePanel",
+    "tabs",
+    "webNavigation",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://crack.wrtn.ai/*",
+    "https://*.wrtn.ai/*",
+    "https://rs.igx.kr/*",
+    "https://igx-radiosonde-api-striker.b-cdn.net/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://crack.wrtn.ai/*"],
+      "js": ["engine/engine.js", "content/content.js"],
+      "css": ["content/client.css"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://crack.wrtn.ai/*"],
+      "js": ["content/page-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ],
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+  "action": {
+    "default_title": "LoreCache 열기"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["engine/*", "icons/*"],
+      "matches": ["https://crack.wrtn.ai/*"]
+    }
+  ]
+}

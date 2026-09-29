@@ -150,3 +150,40 @@ test('only expected Socket.IO send events are intercepted', () => {
   assert.equal(engine.parseFrame('42["typing",{}]'), null);
   assert.equal(engine.parseFrame('not socket.io'), null);
 });
+
+test('Lorebook matches keywords and alwaysInclude items within budget', () => {
+  const lores = [
+    { id: '1', title: '은빛열쇠', keywords: ['은빛열쇠', '열쇠'], content: '선대 왕이 남긴 봉인구.', enabled: true },
+    { id: '2', title: '세계관', content: '마법이 깃든 판타지 제국.', enabled: true, alwaysInclude: true },
+    { id: '3', title: '비활성', keywords: ['은빛열쇠'], content: '무시되어야 함.', enabled: false },
+    { id: '4', title: '무관한로어', keywords: ['우주선'], content: 'SF 설정.', enabled: true },
+  ];
+  const matched = engine.matchLore(lores, '서재에서 은빛열쇠를 집어 들었다.');
+  assert.equal(matched.length, 2);
+  assert.equal(matched[0].id, '2'); // alwaysInclude
+  assert.equal(matched[1].id, '1'); // keyword matched
+  assert.equal(matched.some(x => x.id === '3'), false);
+  assert.equal(matched.some(x => x.id === '4'), false);
+});
+
+test('contextWithLore packs both Lore and memory chunks into budget', () => {
+  const messages = [
+    { id: 'm1', role: 'assistant', text: '오래전 서재 비밀 서랍에 열쇠를 숨겨두었지.' },
+    ...Array.from({ length: 10 }, (_, i) => ({ id: `u${i}`, role: 'user', text: `대화 ${i}` })),
+  ];
+  const ix = engine.index(engine.unitsFromMessages(messages, 'room'));
+  const lores = [
+    { id: 'l1', title: '은빛열쇠', keywords: ['은빛열쇠', '열쇠'], content: '선대 왕의 봉인구.', enabled: true },
+  ];
+  const res = engine.contextWithLore(ix, messages, '그 은빛열쇠는 지금 어디에 있나요?', lores, { budget: 1000 });
+  assert.ok(res.selectedLore.length >= 1);
+  assert.equal(res.selectedLore[0].title, '은빛열쇠');
+  assert.ok(res.selectedMemory.length >= 1);
+  assert.equal(res.selectedMemory[0].messageId, 'm1');
+
+  const composed = engine.composeUser('그 은빛열쇠는 지금 어디에 있나요?', res.selected);
+  assert.ok(composed.includes('"type":"lore"'));
+  assert.ok(composed.includes('"type":"memory"'));
+  assert.ok(composed.includes('선대 왕의 봉인구'));
+  assert.ok(composed.includes('오래전 서재 비밀 서랍'));
+});

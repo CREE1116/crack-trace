@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LoreCache</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <header class="sp-header">
+    <div class="sp-brand">
+      <img class="sp-logo" src="../icons/lorecache.svg" alt="" width="28" height="28">
+      <span class="sp-title">LoreCache</span>
+    </div>
+    <div id="sp-status-chip" class="sp-status-chip">
+      <span class="sp-dot"></span>
+      <span id="sp-status-text">준비됨</span>
+    </div>
+  </header>
+
+  <nav class="sp-tabs">
+    <button class="sp-tab active" data-tab="memory">기억 & 요약</button>
+    <button class="sp-tab" data-tab="lore">로어북</button>
+    <button class="sp-tab" data-tab="radar">모델 레이더</button>
+    <button class="sp-tab" data-tab="settings">설정 & 통계</button>
+  </nav>
+
+  <main class="sp-content">
+    <!-- TAB 1: Memory & Summary -->
+    <section id="sp-tab-memory" class="sp-section active">
+      <div class="sp-card">
+        <div class="sp-card-title"><span>🤖 로컬 Gemini Nano</span><button id="sp-btn-nano-download" class="sp-btn secondary small" type="button" hidden>모델 받기</button></div>
+        <p id="sp-nano-status" class="sp-desc" role="status">모델 상태 확인 중…</p>
+        <progress id="sp-nano-progress" max="100" value="0" hidden style="width:100%"></progress>
+        <button id="sp-btn-refresh-situation" class="sp-btn secondary small" type="button">직전 상황 요약 갱신</button>
+        <p id="sp-situation-result" class="sp-desc" role="status"></p>
+      </div>
+      <div class="sp-card highlight">
+        <div class="sp-card-title">
+          <span>✨ 장기 기억 자동 요약</span>
+          <button id="sp-btn-summarize" class="sp-btn primary" type="button">기억 이어서 갱신</button>
+        </div>
+        <div id="sp-summary-list" class="sp-list"></div>
+      </div>
+      <div class="sp-card">
+        <div class="sp-card-title"><span>불필요한 기억 키워드</span><button id="sp-btn-review-keywords" class="sp-btn secondary small" type="button">제외 후보 찾기</button></div>
+        <p class="sp-desc">선택한 키워드의 기억은 숨겨지고 앞으로 다시 기록하지 않습니다.</p>
+        <div id="sp-keyword-review" class="sp-list"></div>
+        <button id="sp-btn-drop-keywords" class="sp-btn secondary small" type="button" hidden>선택 항목 제외</button>
+      </div>
+
+      <div class="sp-card">
+        <div class="sp-card-title">
+          <span>🧠 이번 전송에 들어갈 기억</span>
+          <button id="sp-btn-sync" class="sp-btn secondary" type="button">새로고침</button>
+        </div>
+        <div id="sp-matched-preview" class="sp-list"></div>
+      </div>
+    </section>
+
+    <!-- TAB 2: Lorebook -->
+    <section id="sp-tab-lore" class="sp-section">
+      <div class="sp-card">
+        <div class="sp-card-title">
+          <span>📜 새 로어 등록</span>
+        </div>
+        <input id="sp-lore-title" class="sp-input" placeholder="명칭 (예: 성검, 황실, 아카데미)">
+        <input id="sp-lore-kw" class="sp-input" placeholder="트리거 키워드 (쉼표 구분: 성검, 아르테미스)">
+        <textarea id="sp-lore-content" class="sp-textarea" placeholder="주입할 설정 및 지시문"></textarea>
+        <div class="sp-row between">
+          <label class="sp-label"><input id="sp-lore-always" type="checkbox"> 항상 주입</label>
+          <button id="sp-btn-add-lore" class="sp-btn primary" type="button">로어 등록</button>
+        </div>
+      </div>
+
+      <div class="sp-row between" style="margin-top: 12px">
+        <span class="sp-subhead">등록된 로어북</span>
+        <div>
+          <button id="sp-btn-export-lore" class="sp-btn secondary small" type="button">내보내기</button>
+          <button id="sp-btn-import-lore" class="sp-btn secondary small" type="button">가져오기</button>
+        </div>
+      </div>
+      <div id="sp-lore-list" class="sp-list" style="margin-top: 8px"></div>
+    </section>
+
+    <!-- TAB 3: Model Radar -->
+    <section id="sp-tab-radar" class="sp-section">
+      <div class="sp-card">
+        <div class="sp-card-title">
+          <span>📡 실시간 모델 서버 레이더</span>
+          <button id="sp-btn-refresh-radar" class="sp-btn secondary" type="button">새로고침</button>
+        </div>
+        <p class="sp-desc">IGX Radiosonde의 원본 측정값입니다. 크랙 모델 선택창의 배지도 같은 저장값을 사용하며, 이름이 확인된 모델에만 표시됩니다.</p>
+        <div id="sp-radar-list" class="sp-list"></div>
+      </div>
+    </section>
+
+    <!-- TAB 4: Settings & Analytics -->
+    <section id="sp-tab-settings" class="sp-section">
+      <div class="sp-card">
+        <div class="sp-card-title">⚙️ 클라이언트 설정</div>
+        <label class="sp-label full">
+          <input id="sp-set-auto" type="checkbox" checked>
+          <span>메시지 전송 시 자동 기억/로어 주입 활성화</span>
+        </label>
+        <label class="sp-label full" for="sp-set-nano-batch">Nano 기억 생성 주기</label>
+        <select id="sp-set-nano-batch" class="sp-input">
+          <option value="1">AI 응답 1턴마다</option>
+          <option value="2">AI 응답 2턴씩</option>
+          <option value="4" selected>AI 응답 4턴씩</option>
+          <option value="6">AI 응답 6턴씩</option>
+          <option value="10">AI 응답 10턴씩</option>
+        </select>
+        <p class="sp-desc">묶음이 차면 Nano가 한 번에 읽습니다. 기억 갱신을 누르면 남은 턴도 즉시 처리합니다.</p>
+        <p class="sp-desc">전송 프롬프트는 사용자 입력 포함 2,000자 고정입니다. 남은 공간에 기억을 넣습니다.</p>
+        <button id="sp-btn-save-settings" class="sp-btn primary" style="width: 100%;margin-top: 10px" type="button">설정 저장</button>
+      </div>
+
+      <div class="sp-card">
+        <div class="sp-card-title">📊 이 대화의 기억 · 오늘 활동</div>
+        <div id="sp-analytics-stat" class="sp-stat-box"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
