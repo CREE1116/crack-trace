@@ -51,6 +51,12 @@
   }
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    // The branch notice lives on the memory chip (and the memory tab), which the memory job's
+    // progress does not overwrite.
+    if (msg?.type === 'BRANCH_CARRIED' && msg.chatId === chatId()) {
+      refreshDockLabels();
+      return;
+    }
     if (msg?.type === 'GET_EDITOR_DRAFT') {
       sendResponse({ chatId: chatId(), draft: attachedEditor?.innerText?.trim() || '' });
       return;
@@ -60,8 +66,10 @@
       if (analysisTasks.get(msg.key)?.id === msg.progressId) finishAnalysis(msg.key, !msg.pending && !msg.error);
       if (msg.key === 'nano') {
         nanoError = String(msg.error || '');
-        const label = document.getElementById('cm-dock-sum-text');
-        if (label) label.textContent = nanoError ? '모델 준비 필요' : msg.pending ? `기억 ${msg.done}/${msg.total} · 대기` : '기억 갱신';
+        if (nanoError) setMemoryButton('error', '기억 멈춤', `${nanoError}\n누르면 다시 시도합니다.`);
+        else if (msg.stopped) setMemoryButton('idle', `기억 ${msg.done}/${msg.total} · 중지됨`, '누르면 이어서 읽습니다.');
+        else if (msg.pending) setMemoryButton('idle', `기억 ${msg.done}/${msg.total} · 대기`, '다음 묶음이 차면 이어서 읽습니다. 누르면 바로 처리합니다.');
+        else setMemoryButton('idle', '기억 갱신', '모든 대화를 읽었습니다.');
       }
       refreshDockLabels();
       handleTyping(attachedEditor?.innerText || '');
@@ -80,8 +88,7 @@
       total: Math.max(0, Number(msg.total) || 0)
     });
     if (msg.key === 'nano') {
-      const label = document.getElementById('cm-dock-sum-text');
-      if (label) label.textContent = `기억 ${msg.done}/${msg.total}`;
+      setMemoryButton('running', `기억 ${msg.done}/${msg.total}`, '읽는 중입니다. 누르면 중지합니다.');
       refreshDockLabels();
     }
     updateAnalysisProgress();
@@ -94,33 +101,81 @@
   }
 
   // --- 1. Client View & Performance Tuning Engine ---
+  // Reading fonts are loaded as web fonts; a family name alone only works when installed locally.
+  const googleFont = family => `https://fonts.googleapis.com/css2?family=${family}&display=swap`;
+  const READING_FONTS = {
+    default: { label: '크랙 기본 글꼴', family: '' },
+    pretendard: { label: 'Pretendard (고딕)', family: '"Pretendard", system-ui, sans-serif', css: 'https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css' },
+    notosans: { label: '본고딕 · Noto Sans KR', family: '"Noto Sans KR", sans-serif', css: googleFont('Noto+Sans+KR:wght@400;500;700') },
+    ibmplex: { label: 'IBM Plex Sans KR (고딕)', family: '"IBM Plex Sans KR", sans-serif', css: googleFont('IBM+Plex+Sans+KR:wght@400;500;700') },
+    gowundodum: { label: '고운돋움', family: '"Gowun Dodum", sans-serif', css: googleFont('Gowun+Dodum') },
+    maruburi: { label: '마루부리 (소설 추천)', family: '"MaruBuri", serif', css: 'https://hangeul.pstatic.net/hangeul_static/css/maru-buri.css' },
+    notoserif: { label: '본명조 · Noto Serif KR', family: '"Noto Serif KR", serif', css: googleFont('Noto+Serif+KR:wght@400;500;700') },
+    myeongjo: { label: '나눔명조', family: '"Nanum Myeongjo", "NanumMyeongjo", serif', css: googleFont('Nanum+Myeongjo:wght@400;700') },
+    gowunbatang: { label: '고운바탕', family: '"Gowun Batang", serif', css: googleFont('Gowun+Batang:wght@400;700') },
+    hahmlet: { label: '함렛', family: '"Hahmlet", serif', css: googleFont('Hahmlet:wght@400;500;700') },
+    kopub: { label: 'KoPub바탕 (PC에 설치된 경우)', family: '"KoPubWorldBatang", "KoPubBatang", serif' },
+    pen: { label: '나눔손글씨 펜', family: '"Nanum Pen Script", cursive', css: googleFont('Nanum+Pen+Script') },
+    custom: { label: '직접 입력…', family: '' }
+  };
+  const DEFAULT_VIEW = { width: 'normal', customWidth: 980, font: 'default', fontSize: '15', lineHeight: '1.65',
+    fontWeight: '', letterSpacing: '0', paragraphGap: '', customFont: '', customFontCss: '', perfOpt: true, imagePreload: true };
+
+  function loadFontCss(url) {
+    if (!/^https:\/\//.test(url || '')) return;
+    if ([...document.querySelectorAll('link[data-cm-font-css]')].some(link => link.href === url)) return;
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = url;
+    link.dataset.cmFontCss = '1';
+    link.onerror = () => console.warn('[Trace] 글꼴을 불러오지 못했습니다:', url);
+    document.head.append(link);
+  }
+
+  function applyViewSettings(saved) {
+    const s = { ...DEFAULT_VIEW, ...(saved || {}) };
+    const body = document.body;
+    // Only the "custom" preset uses the slider width; the other presets have their own CSS widths.
+    if (s.width === 'custom') {
+      body.dataset.cmCustomWidth = 'true';
+      body.removeAttribute('data-cm-width');
+      body.style.setProperty('--cm-chat-width', `${s.customWidth || 980}px`);
+    } else {
+      body.removeAttribute('data-cm-custom-width');
+      body.dataset.cmWidth = s.width || 'normal';
+    }
+
+    const font = READING_FONTS[s.font] || READING_FONTS.default;
+    const family = s.font === 'custom'
+      ? (s.customFont ? `"${String(s.customFont).replace(/["\\]/g, '')}", sans-serif` : '')
+      : font.family;
+    loadFontCss(s.font === 'custom' ? s.customFontCss : font.css);
+    body.dataset.cmFont = family ? 'on' : 'default';
+    body.style.setProperty('--cm-reading-font', family || 'inherit');
+    body.dataset.cmFontWeight = s.fontWeight ? 'on' : '';
+    body.style.setProperty('--cm-font-weight', s.fontWeight || 'inherit');
+    body.style.setProperty('--cm-letter-spacing', Number(s.letterSpacing) ? `${s.letterSpacing}em` : 'normal');
+    body.dataset.cmParagraphGap = s.paragraphGap ? 'on' : '';
+    body.style.setProperty('--cm-paragraph-gap', s.paragraphGap ? `${s.paragraphGap}em` : '0');
+    body.dataset.cmPerf = s.perfOpt ? 'true' : 'false';
+    body.style.setProperty('--cm-font-size', `${s.fontSize || 15}px`);
+    body.style.setProperty('--cm-line-height', s.lineHeight || '1.65');
+    if (s.imagePreload) preloadImages();
+  }
+
+  function updateFontPreview(modal) {
+    const preview = modal.querySelector('#cm-font-preview');
+    if (!preview) return;
+    const style = getComputedStyle(document.body);
+    preview.style.fontFamily = style.getPropertyValue('--cm-reading-font').trim() || 'inherit';
+    preview.style.fontSize = style.getPropertyValue('--cm-font-size').trim();
+    preview.style.lineHeight = style.getPropertyValue('--cm-line-height').trim();
+    preview.style.letterSpacing = style.getPropertyValue('--cm-letter-spacing').trim();
+    preview.style.fontWeight = style.getPropertyValue('--cm-font-weight').trim();
+  }
+
   function applyClientViewSettings() {
-    chrome.storage.local.get(['clientViewSettings'], res => {
-      const s = res.clientViewSettings || {
-        width: 'wide',
-        customWidth: 980,
-        font: 'maruburi',
-        fontSize: '15',
-        lineHeight: '1.65',
-        perfOpt: true,
-        imagePreload: true
-      };
-
-      if (s.customWidth) {
-        document.body.dataset.cmCustomWidth = 'true';
-        document.body.style.setProperty('--cm-chat-width', `${s.customWidth}px`);
-      } else {
-        document.body.removeAttribute('data-cm-custom-width');
-        document.body.dataset.cmWidth = s.width || 'wide';
-      }
-
-      document.body.dataset.cmFont = s.font || 'maruburi';
-      document.body.dataset.cmPerf = s.perfOpt ? 'true' : 'false';
-      document.body.style.setProperty('--cm-font-size', `${s.fontSize || 15}px`);
-      document.body.style.setProperty('--cm-line-height', s.lineHeight || '1.65');
-
-      if (s.imagePreload) preloadImages();
-    });
+    chrome.storage.local.get(['clientViewSettings'], res => applyViewSettings(res.clientViewSettings));
   }
 
   function preloadImages() {
@@ -172,9 +227,6 @@
       dock.className = 'cm-composer-dock';
       dock.innerHTML = `
         <div class="cm-dock-chips">
-          <button type="button" class="cm-dock-chip" id="cm-dock-state" title="현재 씬 상태 (위치·목표·지속상태)">
-            <span>📌</span><span id="cm-dock-state-text">현재상태</span>
-          </button>
           <button type="button" class="cm-dock-chip" id="cm-dock-memory" title="장기기억 진화 덱">
             <span>🌿</span><span id="cm-dock-memory-count">기억덱</span>
           </button>
@@ -184,11 +236,9 @@
           <button type="button" class="cm-dock-chip" id="cm-dock-lore" title="로어북 키워드·설정 관리">
             <span>📜</span><span id="cm-dock-lore-name">로어북</span>
           </button>
-          <button type="button" class="cm-dock-chip" id="cm-dock-notes" title="현재 대화방 메모장">
-            <span>📋</span><span>메모</span>
-          </button>
         </div>
         <div class="cm-dock-actions">
+          <span id="cm-dock-counter" class="cm-dock-counter" hidden title="크랙 입력 한도 2,000자 중 내 입력과 붙는 기억의 글자수"></span>
           <button type="button" class="cm-dock-action-btn secondary" id="cm-dock-btn-preview" aria-expanded="false" aria-controls="cm-composer-preview" title="현재 입력과 직전 AI 응답을 반영한 전송 프롬프트 보기">👁️ 프롬프트</button>
           <button type="button" class="cm-dock-action-btn" id="cm-dock-btn-summarize" title="최근 대화 분석 및 기억 진화 요약">
             <span>📡</span><span id="cm-dock-sum-icon">✨</span><span id="cm-dock-sum-text">기억 갱신</span>
@@ -214,11 +264,9 @@
       progress.insertAdjacentElement('afterend', preview);
       updateAnalysisProgress();
 
-      dock.querySelector('#cm-dock-state').onclick = () => openMasterModal('state');
       dock.querySelector('#cm-dock-memory').onclick = () => openMasterModal('deck');
       dock.querySelector('#cm-dock-usernote').onclick = () => openMasterModal('usernote');
       dock.querySelector('#cm-dock-lore').onclick = () => openMasterModal('lore');
-      dock.querySelector('#cm-dock-notes').onclick = () => openMasterModal('notes');
       dock.querySelector('#cm-dock-btn-preview').onclick = () => {
         preview.hidden = !preview.hidden;
         dock.querySelector('#cm-dock-btn-preview').setAttribute('aria-expanded', String(!preview.hidden));
@@ -441,7 +489,7 @@
       const modal = document.getElementById('cm-master-modal');
       if (id && modal?.classList.contains('open') && modal.querySelector('#cm-master-tab-deck.active') &&
           (changes[`nanoMemory:${id}`] || changes[`nanoOverrides:${id}`] || changes[`dropKw:${id}`] || changes[`graph:${id}`])) {
-        renderMemoryDeckTab(id, modal);
+        scheduleDeckRender(id, modal);
       }
       if (id && (changes[`nanoMemory:${id}`] || changes[`nanoOverrides:${id}`] || changes[`dropKw:${id}`])) {
         refreshDockLabels();
@@ -455,37 +503,33 @@
     if (!id) return;
 
     chrome.storage.local.get([
-      `currentState:${id}`,
       `usernote:${id}`,
       'usernote:global',
+      `usernoteEnabled:${id}`,
+      `branchOf:${id}`,
       `summary:${id}`,
       `lore:${id}`,
       `nanoMemory:${id}`,
       'llmIntervention'
     ], res => {
       if (chatId() !== id) return;
-      const cs = res[`currentState:${id}`];
-      const stateEl = document.getElementById('cm-dock-state-text');
-      if (stateEl) stateEl.textContent = cs?.enabled !== false && cs?.location ? `상태: ${cs.location.slice(0, 6)}…` : '현재상태';
 
 
-      const un = res[`usernote:${id}`] || res['usernote:global'];
+      const un = res[`usernoteEnabled:${id}`] !== false && (res[`usernote:${id}`] || res['usernote:global']);
       const unEl = document.getElementById('cm-dock-usernote-name');
       if (unEl) unEl.textContent = un ? '유저노트 On' : '유저노트';
 
-      const sum = res[`summary:${id}`] || [];
       const sumEl = document.getElementById('cm-dock-memory-count');
       if (sumEl) {
-        if (res.llmIntervention !== false) {
-          chrome.runtime.sendMessage({ type: 'GET_NANO_FACTS', chatId: id }, reply => {
-            if (chatId() !== id || !sumEl.isConnected) return;
-            const count = reply?.facts?.length || 0;
-            sumEl.textContent = count ? `기억 ${count}건` : (nanoError ? '기억 확인 필요' : '기억 대기');
-          });
-          sumEl.parentElement.title = nanoError || 'Gemini Nano가 기록한 장기 기억';
-        } else {
-          sumEl.textContent = sum.length ? `기억 ${sum.length}건` : '기억덱';
-        }
+        const branch = res[`branchOf:${id}`];
+        chrome.runtime.sendMessage({ type: 'GET_NANO_FACTS', chatId: id }, reply => {
+          if (chatId() !== id || !sumEl.isConnected) return;
+          const count = reply?.facts?.length || 0;
+          sumEl.textContent = `${count ? `기억 ${count}건` : (nanoError ? '기억 확인 필요' : '기억 대기')}${branch ? ' · 분기' : ''}`;
+        });
+        sumEl.parentElement.title = nanoError || (branch
+          ? `분기된 대화예요. 원본 대화의 ${branch.turns}번째 턴까지 같아서, 그때까지의 기억 ${branch.facts}건과 고정·로어·유저노트를 가져왔어요.`
+          : '이 대화방의 장기 기억');
       }
 
       const lores = res[`lore:${id}`] || [];
@@ -496,52 +540,41 @@
     });
   }
 
+  // idle: ready · running: reading (click stops) · stopping · error
+  function setMemoryButton(state, label, title = '') {
+    const btn = document.getElementById('cm-dock-btn-summarize');
+    const text = document.getElementById('cm-dock-sum-text');
+    if (!btn || !text) return;
+    btn.dataset.state = state;
+    btn.classList.toggle('running', state === 'running' || state === 'stopping');
+    btn.classList.toggle('error', state === 'error');
+    text.textContent = state === 'running' ? `${label} · 중지` : label;
+    btn.title = title;
+  }
+
   function triggerSummarization() {
     const id = chatId();
     if (!id) { alert('대화방 ID를 찾을 수 없습니다.'); return; }
 
     const btn = document.getElementById('cm-dock-btn-summarize');
-    const icon = document.getElementById('cm-dock-sum-icon');
-    const text = document.getElementById('cm-dock-sum-text');
     if (!btn || btn.classList.contains('loading')) return;
 
-    if (nanoModeEnabled) {
-      btn.classList.add('loading');
-      text.textContent = '모델 화면 열기…';
-      chrome.runtime.sendMessage({ type: 'OPEN_NANO_PANEL', chatId: id }, result => {
-        btn.classList.remove('loading');
-        const nanoTask = analysisTasks.get('nano');
-        text.textContent = result?.success
-          ? (nanoTask ? `기억 ${nanoTask.done}/${nanoTask.total}` : '모델 준비 / 분석')
-          : '기억 갱신';
-        if (!result?.success) btn.title = result?.error || '모델 화면을 열지 못했습니다.';
+    // One memory job for both modes (LLM or rules); pressing again while it runs stops it.
+    {
+      if (btn.dataset.state === 'stopping') return;
+      if (btn.dataset.state === 'running') {
+        setMemoryButton('stopping', '중지하는 중…', '지금 읽는 묶음까지 저장하고 멈춥니다.');
+        chrome.runtime.sendMessage({ type: 'STOP_NANO_MEMORY', chatId: id }, result => {
+          if (!result?.running) setMemoryButton('idle', '기억 갱신');
+        });
+        return;
+      }
+      setMemoryButton('running', '기억 갱신 시작', '읽는 중입니다. 누르면 중지합니다.');
+      chrome.runtime.sendMessage({ type: 'START_NANO_MEMORY', chatId: id, force: true }, result => {
+        if (!result?.success) setMemoryButton('error', '기억 멈춤', result?.error || '기억 갱신을 시작하지 못했습니다.');
       });
       return;
     }
-    triggerLocalSummarization(id, btn, icon, text);
-  }
-
-  function triggerLocalSummarization(id, btn, icon, text) {
-    btn.classList.add('loading');
-    icon.innerHTML = '<span class="cm-spinner"></span>';
-    text.textContent = '⏳ 분석 중…';
-    const progressId = startAnalysis('summary', '기억 갱신');
-
-    chrome.runtime.sendMessage({ type: 'GENERATE_SUMMARY_DRAFT', chatId: id, progressId }, res => {
-      finishAnalysis('summary');
-      btn.classList.remove('loading');
-      icon.textContent = '🌿';
-      text.textContent = '기억 갱신';
-
-      if (!res || !res.success) {
-        alert(res?.error || '기억 요약 분석 실패');
-        return;
-      }
-
-      if (res.nanoStarted) return;
-
-      openMasterModal('deck', { summaryDraft: res });
-    });
   }
 
   // --- 3. Typing & Pre-Staging for 0ms WebSocket Injection ---
@@ -551,6 +584,7 @@
     if (!id) return;
 
     stagedPrompt = cleanPrompt;
+    updateCounter(cleanPrompt.length, cleanPrompt.length);
     const preview = document.getElementById('cm-composer-preview-text');
     const previewStatus = document.getElementById('cm-composer-preview-status');
     if (preview && !cleanPrompt) preview.value = '입력창에 메시지를 쓰면 전송할 프롬프트가 표시됩니다.';
@@ -564,6 +598,8 @@
     if (cleanPrompt) {
       chrome.runtime.sendMessage({ type: 'GET_PREPARED_CONTEXT', chatId: id, outgoing: cleanPrompt }, res => {
         if (stagedPrompt !== cleanPrompt || chatId() !== id) return;
+        if (res?.success) updateCounter(cleanPrompt.length, String(res.content || cleanPrompt).length);
+        if (res?.success && !res.intentReady) scheduleIntent(id, cleanPrompt);
         if (res?.success) updateStatusUI({
           userNoteCount: res.userNote ? 1 : 0,
           memoryCount: res.res?.selectedMemory?.length || 0,
@@ -571,7 +607,7 @@
         });
         if (preview) preview.value = res?.success ? (res.content || cleanPrompt) : '프롬프트를 준비하지 못했습니다.';
         if (previewStatus) previewStatus.textContent = res?.success
-          ? (res.selected?.length ? `주입 ${res.selected.length}건 · ${res.mode === 'nano' ? 'Nano 기억' : '규칙식 기억'}` : `주입 없음 · ${res.reason || '관련 기억 없음'}`)
+          ? (res.selected?.length ? `주입 ${res.selected.length}건 · ${res.mode === 'nano' ? 'LLM 기억' : '규칙식 기억'}` : `주입 없음 · ${res.reason || '관련 기억 없음'}`)
           : '프롬프트 준비 오류';
         if (res && res.success && res.content) {
           chrome.runtime.sendMessage({ type: 'LIVE_PROMPT_PREVIEW', target: 'sidepanel', chatId: id,
@@ -581,12 +617,39 @@
             originalPrompt: cleanPrompt,
             chatId: id,
             injectedContent: res.content,
-            userNote: res.userNote || '',
             injectedCount: res.selected?.length || 0
           }, '*');
         }
       });
     }
+  }
+
+  // With an LLM, once typing pauses, ask which remembered subjects the draft refers to; when the
+  // answer arrives the prompt is prepared again with it. Sending earlier just uses word matching.
+  let intentTimer = 0;
+  function scheduleIntent(id, draft) {
+    clearTimeout(intentTimer);
+    if (draft.length < 4) return;
+    intentTimer = setTimeout(() => {
+      chrome.runtime.sendMessage({ type: 'LLM_INTENT', chatId: id, draft }, reply => {
+        if (chrome.runtime.lastError || !reply?.success || reply.cached) return;
+        if (chatId() === id && stagedPrompt === draft) handleTyping(draft);
+      });
+    }, 1200);
+  }
+
+  // Crack rejects messages over 2,000 characters; the memory block shares that limit.
+  function updateCounter(inputLength, totalLength) {
+    const el = document.getElementById('cm-dock-counter');
+    if (!el) return;
+    el.hidden = !inputLength;
+    if (!inputLength) return;
+    const memory = Math.max(0, totalLength - inputLength);
+    el.textContent = `입력 ${inputLength.toLocaleString('ko-KR')}${memory ? ` · 기억 ${memory.toLocaleString('ko-KR')}` : ''} / 2,000`;
+    el.dataset.level = inputLength > 2000 ? 'over' : inputLength >= 1900 ? 'hot' : inputLength >= 1400 ? 'warn' : 'ok';
+    el.title = inputLength > 2000 ? '크랙 입력 한도(2,000자)를 넘었습니다.'
+      : inputLength >= 1400 ? '입력이 길수록 붙일 수 있는 기억이 줄어듭니다.'
+        : '크랙 입력 한도 2,000자 중 내 입력과 붙는 기억의 글자수';
   }
 
   function updateStatusUI(res) {
@@ -600,11 +663,23 @@
   }
 
   // --- 4. Chat Bubble 100% Zero-Trace Masking ---
-  function maskInjectedMessages() {
-    const startTag = '<!--CRACK_UBIS_CONTEXT_START-->';
-    const endTag = '<!--CRACK_UBIS_CONTEXT_END-->';
+  // Current and legacy markers of the injected memory block.
+  const OWN_MARKERS = CrackMatrixEngine.MARKERS;
+  const OWN_BLOCK_RE = /<!--(?:TRACE|CRACK_UBIS_CONTEXT_START)-->[\s\S]*?<!--(?:\/TRACE|CRACK_UBIS_CONTEXT_END)-->/g;
 
-    const candidates = document.querySelectorAll('.wrtn-markdown, [data-message-group-id], p, div');
+  function maskInjectedMessages() {
+    for (const [startTag, endTag] of OWN_MARKERS) maskInjectedBlocks(startTag, endTag);
+  }
+
+  function maskInjectedBlocks(startTag, endTag) {
+
+    // Only bubbles that still show the marker are searched; scanning every div on
+    // each DOM mutation made long chats stutter while replies streamed in.
+    const bubbles = [...document.querySelectorAll('.wrtn-markdown')].filter(md =>
+      !md.parentElement?.closest('.wrtn-markdown') && (md.textContent || '').includes(startTag));
+    const candidates = bubbles.length
+      ? bubbles.flatMap(md => [md, ...md.querySelectorAll('p, div')])
+      : (document.querySelector('.wrtn-markdown') ? [] : document.querySelectorAll('[data-message-group-id], p, div'));
     for (const el of candidates) {
       if (el.closest('#cm-client-modal, #cm-summary-modal, #cm-model-modal, #cm-top-pill-bar, script, style')) continue;
       if (el.dataset.cmMasked) continue;
@@ -677,6 +752,175 @@
     if (e.data?.type === 'CRACK_MATRIX_INJECTED_SENT') {
       [10, 40, 120, 300, 800].forEach(delay => setTimeout(maskInjectedMessages, delay));
     }
+  });
+
+  // --- Bubble tools: turn number + pin ---
+  // Each chat bubble gets "#턴" and a 📌 button. The service worker maps a bubble
+  // to its turn by matching the bubble text against the synced history.
+  const bubbleTurns = new Map();
+  let bubbleToolsTimer = 0;
+  let bubbleToolsBusy = false;
+
+  function scheduleBubbleTools() {
+    clearTimeout(bubbleToolsTimer);
+    bubbleToolsTimer = setTimeout(mountBubbleTools, 400);
+  }
+
+  function bubbleGroups() {
+    const seen = new Set();
+    return [...document.querySelectorAll('[data-message-group-id]')].filter(group => {
+      const gid = group.getAttribute('data-message-group-id');
+      if (!gid || seen.has(gid) || group.parentElement?.closest('[data-message-group-id]')) return false;
+      seen.add(gid);
+      return true;
+    });
+  }
+
+  function bubbleText(group) {
+    return [...group.querySelectorAll('.wrtn-markdown')].filter(md => !md.parentElement.closest('.wrtn-markdown'))
+      .map(md => md.innerText || md.textContent || '').join('\n')
+      .replace(OWN_BLOCK_RE, '').trim();
+  }
+
+  async function mountBubbleTools() {
+    const id = chatId();
+    if (!id || bubbleToolsBusy) return;
+    const pending = bubbleGroups().filter(group => !group.querySelector(':scope .cm-bubble-tools'));
+    const items = pending.map(group => ({ group, gid: group.getAttribute('data-message-group-id') || '', text: bubbleText(group) }))
+      .filter(item => item.text);
+    if (!items.length) return;
+    bubbleToolsBusy = true;
+    try {
+      // data-message-group-id is the message id; text is the fallback while a reroll comparison is shown.
+      const res = await chrome.runtime.sendMessage({ type: 'LOCATE_TURNS', chatId: id,
+        items: items.map(item => ({ id: item.gid, text: item.text.slice(0, 200) })) });
+      if (chatId() !== id || !res?.success) return;
+      const pinned = new Set(((await chrome.storage.local.get(`pins:${id}`))[`pins:${id}`] || []).map(pin => pin.messageId));
+      items.forEach((item, index) => {
+        const hit = res.turns[index];
+        if (!hit || item.group.querySelector(':scope .cm-bubble-tools')) return;
+        bubbleTurns.set(hit.turn, item.group);
+        const tools = document.createElement('div');
+        tools.className = 'cm-bubble-tools';
+        tools.dataset.messageId = hit.messageId;
+        const turn = document.createElement('span');
+        turn.textContent = `#${hit.turn}`;
+        const pin = document.createElement('button');
+        pin.type = 'button';
+        pin.className = 'cm-bubble-pin';
+        pin.classList.toggle('active', pinned.has(hit.messageId));
+        pin.textContent = '📌';
+        pin.title = pinned.has(hit.messageId) ? '고정 해제' : '이 대화를 기억에 고정 (항상 먼저 주입)';
+        pin.onclick = async event => {
+          event.stopPropagation();
+          const result = await chrome.runtime.sendMessage({ type: 'TOGGLE_PIN', chatId: id, messageId: hit.messageId });
+          if (!result?.success) { pin.title = result?.error || '고정하지 못했습니다.'; return; }
+          pin.classList.toggle('active', result.pinned);
+          pin.title = result.pinned ? '고정 해제' : '이 대화를 기억에 고정 (항상 먼저 주입)';
+        };
+        tools.append(turn, pin);
+        // Sit left of Crack's own "메시지 옵션" button when it exists, like the native toolbar items.
+        const option = item.group.querySelector('button[aria-label="메시지 옵션"]');
+        const anchor = option?.closest('.dropdown-button') || option;
+        if (anchor?.parentElement) {
+          tools.classList.add('in-toolbar');
+          anchor.parentElement.insertBefore(tools, anchor);
+        } else {
+          const mds = [...item.group.querySelectorAll('.wrtn-markdown')].filter(md => !md.parentElement.closest('.wrtn-markdown'));
+          (mds.at(-1)?.parentElement || item.group).append(tools);
+        }
+      });
+    } catch {
+      // The service worker may be restarting; the next DOM change retries.
+    } finally {
+      bubbleToolsBusy = false;
+    }
+  }
+
+  function findGroupById(messageId) {
+    return messageId ? document.querySelector(`[data-message-group-id="${CSS.escape(messageId)}"]`) : null;
+  }
+
+  function chatScroller() {
+    let el = document.querySelector('[data-message-group-id]')?.parentElement;
+    while (el && el !== document.body) {
+      const style = getComputedStyle(el);
+      if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight) return el;
+      el = el.parentElement;
+    }
+    return document.scrollingElement;
+  }
+
+  function flashGroup(group) {
+    document.getElementById('cm-master-modal')?.classList.remove('open');
+    group.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    group.classList.add('cm-bubble-flash');
+    setTimeout(() => group.classList.remove('cm-bubble-flash'), 1600);
+  }
+
+  function showTurnText(turn, text) {
+    document.getElementById('cm-turn-peek')?.remove();
+    const box = document.createElement('div');
+    box.id = 'cm-turn-peek';
+    box.className = 'cm-turn-peek';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-label', `대화 ${turn} 원문`);
+    const head = document.createElement('div');
+    head.className = 'cm-turn-peek-head';
+    const title = document.createElement('strong');
+    title.textContent = `대화 ${turn} 원문`;
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '닫기';
+    close.onclick = () => box.remove();
+    head.append(title, close);
+    const body = document.createElement('div');
+    body.className = 'cm-turn-peek-body';
+    body.textContent = text;
+    box.append(head, body);
+    box.onkeydown = event => { if (event.key === 'Escape') box.remove(); };
+    document.body.append(box);
+    close.focus();
+  }
+
+  let jumpSerial = 0;
+  // Crack loads older messages as the list scrolls up. Keep scrolling until the
+  // target bubble appears; if it never does, show that turn's text instead.
+  async function jumpToTurn(turn) {
+    const id = chatId();
+    const serial = ++jumpSerial;
+    const info = await chrome.runtime.sendMessage({ type: 'TURN_INFO', chatId: id, turn: Number(turn) }).catch(() => null);
+    if (!info?.success) { alert(info?.error || `대화 ${turn}을(를) 찾지 못했습니다.`); return; }
+    let group = findGroupById(info.messageId) || bubbleTurns.get(Number(turn));
+    if (group?.isConnected) { flashGroup(group); return; }
+
+    document.getElementById('cm-master-modal')?.classList.remove('open');
+    const scroller = chatScroller();
+    const reversed = Boolean(document.querySelector('[data-message-group-id]')?.closest('.flex-col-reverse'));
+    let lastCount = -1;
+    let stalls = 0;
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline && stalls < 4 && serial === jumpSerial && chatId() === id) {
+      scroller.scrollTo({ top: reversed ? -scroller.scrollHeight : 0 });
+      await new Promise(resolve => setTimeout(resolve, 600));
+      group = findGroupById(info.messageId);
+      if (group) { flashGroup(group); return; }
+      const count = document.querySelectorAll('[data-message-group-id]').length;
+      stalls = count === lastCount ? stalls + 1 : 0;
+      lastCount = count;
+    }
+    if (serial === jumpSerial) showTurnText(turn, info.text);
+  }
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    const id = chatId();
+    if (area !== 'local' || !id || !changes[`pins:${id}`]) return;
+    const pinned = new Set((changes[`pins:${id}`].newValue || []).map(pin => pin.messageId));
+    for (const tools of document.querySelectorAll('.cm-bubble-tools')) {
+      tools.querySelector('.cm-bubble-pin')?.classList.toggle('active', pinned.has(tools.dataset.messageId));
+    }
+    const modal = document.getElementById('cm-master-modal');
+    if (modal?.classList.contains('open')) renderPinnedMemories(id, modal);
   });
 
   // --- 5. Brand-New Dedicated Model Selector Modal ---
@@ -799,8 +1043,10 @@
 
   // --- 6. Unified Master Modal Controller (Trace Console) ---
   let currentDeckFilter = 'all';
+  let deckSearch = '';
+  const deckMatches = (...texts) => !deckSearch || texts.some(t => String(t || '').toLowerCase().includes(deckSearch));
 
-  function openMasterModal(activeTab = 'state', extraOpts = null) {
+  function openMasterModal(activeTab = 'deck', extraOpts = null) {
     const id = chatId();
     let modal = document.getElementById('cm-master-modal');
     if (!modal) {
@@ -818,66 +1064,15 @@
             <button class="cm-modal-close" type="button" title="닫기 (ESC)">×</button>
           </div>
           <div class="cm-modal-tabs" id="cm-master-tabs">
-            <button class="cm-tab-btn" data-tab="state"><span>📌</span> 현재 상태</button>
-            <button class="cm-tab-btn" data-tab="deck"><span>🌿</span> 진화 기억덱</button>
+            <button class="cm-tab-btn" data-tab="deck"><span>🌿</span> 기억</button>
             <button class="cm-tab-btn" data-tab="usernote"><span>📝</span> 유저노트</button>
             <button class="cm-tab-btn" data-tab="lore"><span>📜</span> 로어북</button>
-            <button class="cm-tab-btn" data-tab="notes"><span>📋</span> 메모장</button>
-            <button class="cm-tab-btn" data-tab="settings"><span>⚙️</span> 뷰 & 저장소</button>
+            <button class="cm-tab-btn" data-tab="settings"><span>⚙️</span> 설정</button>
             <button class="cm-tab-btn" data-tab="export"><span>📥</span> 내보내기</button>
           </div>
           <div class="cm-modal-body cm-master-body">
-            <!-- TAB 1: Current State -->
-            <div id="cm-master-tab-state" class="cm-tab-pane">
-              <div class="cm-card highlight">
-                <div class="cm-card-header">
-                  <span>📌 놓치면 안 되는 현재 상태</span>
-                  <label class="cm-switch-label"><input id="cm-curstate-enable" type="checkbox" checked> 주입 활성화</label>
-                </div>
-                <p style="font-size: 11.5px;color: var(--cm-text-3);margin: 0 0 8px">
-                  자동 기억이 놓친 중요한 상태만 고정해 두세요. 대화가 바뀌면 직접 수정하거나 주입을 끌 수 있습니다.
-                </p>
-                <div style="display: grid;grid-template-columns: 1fr 1fr;gap: 8px;margin-bottom: 8px">
-                  <div>
-                    <label style="font-size: 11px;color: var(--cm-text-3);display: block;margin-bottom: 3px">📍 현재 위치/장소</label>
-                    <input id="cm-curstate-loc" class="cm-input" placeholder="예: 동부 숲속 버려진 방앗간 지하 2층">
-                  </div>
-                  <div>
-                    <label style="font-size: 11px;color: var(--cm-text-3);display: block;margin-bottom: 3px">🎯 당면 목표 / 전개 집중점</label>
-                    <input id="cm-curstate-obj" class="cm-input" placeholder="예: 오른팔 자상을 지혈하고 에다와 함께 탈출구 확보">
-                  </div>
-                </div>
-                <div>
-                  <label style="font-size: 11px;color: var(--cm-text-3);display: block;margin-bottom: 3px">🩹 지속 신체 상태 / 부상 / 디테일한 관계 변화</label>
-                  <textarea id="cm-curstate-cond" class="cm-textarea" style="min-height: 75px" placeholder="예: 오른팔 자상 출혈 진행 중, 마력 소진으로 인한 현기증, 에다에 대한 경계심이 안도로 완화됨"></textarea>
-                </div>
-                <div style="display: flex;justify-content: space-between;align-items: center;margin-top: 8px">
-                  <span id="cm-curstate-status" style="font-size: 11.5px;color: var(--cm-text)"></span>
-                  <button id="cm-btn-save-curstate" class="cm-btn-primary small" type="button">💾 현재 상태 저장 & 즉시 반영</button>
-                </div>
-              </div>
-            </div>
-
             <!-- TAB 2: Evolution Deck -->
             <div id="cm-master-tab-deck" class="cm-tab-pane">
-              <!-- Inline Summary Draft Review Box -->
-              <div id="cm-deck-draft-box" class="cm-card highlight" style="display: none;border-color: var(--cm-line);margin-bottom: 12px">
-                <div class="cm-card-header">
-                  <span>🌿 4턴 슬라이딩 윈도우 & 시계열 진화 분석 초안</span>
-                  <span id="cm-deck-draft-turn-tag" style="font-size: 11px;color: var(--cm-text)"></span>
-                </div>
-                <input id="cm-deck-draft-title" class="cm-input" placeholder="기억 카드 제목">
-                <textarea id="cm-deck-draft-content" class="cm-textarea" style="min-height: 130px;font-family: monospace;font-size: 12px;line-height: 1.5" placeholder="기억 연대기 내용"></textarea>
-                <div id="cm-deck-draft-notice" class="cm-notice" style="display: none">
-                  💡 기존 기억 카드가 존재합니다. [기존 연대기 갱신]을 누르면 최신 진화 상태로 갱신되며, [새 카드로 추가]를 누르면 별도 카드가 보존됩니다.
-                </div>
-                <div style="display: flex;justify-content: flex-end;gap: 8px;margin-top: 8px">
-                  <button id="cm-btn-deck-draft-update" class="cm-btn-primary small" type="button">기존 연대기 갱신</button>
-                  <button id="cm-btn-deck-draft-new" class="cm-btn-secondary small" type="button">새 기억 카드로 추가</button>
-                  <button id="cm-btn-deck-draft-close" class="cm-btn-secondary small" type="button">닫기</button>
-                </div>
-              </div>
-
               <!-- Filter and Actions Row -->
               <div style="display: flex;justify-content: space-between;align-items: center;margin-bottom: 10px;flex-wrap: wrap;gap: 8px">
                 <div class="cm-filter-pills" id="cm-deck-filter-pills">
@@ -889,33 +1084,19 @@
                   <button class="cm-filter-pill" data-filter="개념">🏷️ 개념</button>
                 </div>
                 <div style="display: flex;gap: 6px;align-items: center">
-                  <label class="cm-switch-label" style="font-size: 11px" title="Chrome 내장 Gemini Nano 자연어 정제 (기본 활성화)">
-                    <input id="cm-mem-llm-toggle" type="checkbox" checked> 🤖 Gemini Nano 개입
-                  </label>
+                  <input id="cm-deck-search" class="cm-input" type="search" placeholder="기억 검색" aria-label="기억 검색" style="width: 150px;height: 28px;font-size: 12px;padding: 2px 8px">
                   <button id="cm-btn-mem-rebuild" class="cm-btn-secondary small" type="button" title="현재 대화를 다시 분석해 기억을 교체">⚡ 전체 다시 읽기</button>
-                  <button id="cm-btn-mem-sum-now" class="cm-btn-primary small" type="button">✨ 새 요약 실행</button>
+                  <button id="cm-btn-mem-sum-now" class="cm-btn-primary small" type="button">✨ 지금 갱신</button>
                 </div>
               </div>
 
               <!-- Evolution Cards List -->
+              <div id="cm-deck-pins"></div>
               <div id="cm-deck-cards-list" class="cm-memory-list"></div>
-
-              <!-- Deck Sub-Views Toggle -->
-              <div style="border-top: 1px solid var(--cm-line);margin-top: 16px;padding-top: 12px">
-                <div style="display: flex;gap: 8px;margin-bottom: 10px">
-                  <button id="cm-btn-toggle-logs" class="cm-btn-secondary small" type="button">📅 턴별 원본 슬라이딩 로그 보기</button>
-                </div>
-                <div id="cm-deck-subview-logs" style="display: none;margin-bottom: 12px">
-                  <div style="display: flex;justify-content: space-between;align-items: center;margin-bottom: 6px">
-                    <span style="font-size: 11.5px;color: var(--cm-text-3)">4턴 슬라이딩 윈도우 단위로 축적된 시계열 원본 로그</span>
-                    <span id="cm-logs-count" style="font-size: 11px;color: var(--cm-text)"></span>
-                  </div>
-                  <div id="cm-logs-list" class="cm-memory-list" style="max-height: 260px;overflow-y: auto"></div>
-                </div>
-              </div>
             </div>
 
             <!-- TAB 3: User Note -->
+
             <div id="cm-master-tab-usernote" class="cm-tab-pane">
               <div class="cm-card highlight">
                 <div class="cm-card-header">
@@ -938,10 +1119,6 @@
                   </div>
                 </div>
 
-                <div class="cm-notice" style="margin: 8px 0;background: var(--cm-bg-2);border-color: var(--cm-line)">
-                  ⚡ <b>100% 자동 분리 전송</b>: 크랙 모달을 따로 열거나 붙여넣을 필요 없이, 메시지 전송 시 순정 웹소켓 속성으로 자동 주입되어 말풍선을 오염시키지 않습니다 (기본 500자 / 💎 유료 플랜 2,000자 지원).
-                </div>
-
                 <div class="cm-editor-toolbar">
                   <div class="cm-format-chips">
                     <button type="button" class="cm-fmt-btn" data-fmt="bracket-round">()</button>
@@ -960,13 +1137,21 @@
                     <span id="cm-usernote-counter" class="cm-char-counter">0/500자</span>
                   </div>
                 </div>
+                <details id="cm-legacy-notes" class="cm-legacy-notes" hidden>
+                  <summary>예전 메모장 내용 (메모장은 유저노트로 합쳐졌습니다)</summary>
+                  <textarea id="cm-legacy-notes-text" class="cm-textarea" readonly style="min-height: 80px"></textarea>
+                  <div style="display: flex;justify-content: flex-end;gap: 6px;margin-top: 6px">
+                    <button id="cm-btn-legacy-notes-append" class="cm-btn-secondary small" type="button">유저노트 뒤에 붙이기</button>
+                    <button id="cm-btn-legacy-notes-delete" class="cm-btn-secondary small" type="button" style="color: var(--cm-danger)">예전 메모 삭제</button>
+                  </div>
+                </details>
                 <textarea id="cm-usernote-text" class="cm-textarea" style="min-height: 90px" placeholder="예: 서술은 3인칭 소설체로 길고 밀도 있게 전개하고, 인물의 복합적인 내면 심리와 시각적 디테일을 풍부하게 묘사하세요."></textarea>
 
                 <div style="display: flex;justify-content: space-between;align-items: center;margin-top: 8px;flex-wrap: wrap;gap: 6px">
                   <button id="cm-btn-copy-usernote-text" class="cm-btn-secondary small" type="button" title="텍스트 복사">📋 텍스트 복사</button>
-                  <div style="display: flex;gap: 6px">
-                    <button id="cm-btn-save-usernote" class="cm-btn-primary small" type="button">💾 이 대화방에만 저장</button>
-                    <button id="cm-btn-save-usernote-global" class="cm-btn-secondary small" type="button">🌐 모든 대화방 공통으로 저장</button>
+                  <div style="display: flex;gap: 8px;align-items: center">
+                    <span id="cm-usernote-status" style="font-size: 11px;color: var(--cm-text-3)"></span>
+                    <button id="cm-btn-save-usernote-global" class="cm-btn-secondary small" type="button" title="유저노트가 없는 모든 대화방에 기본으로 쓰입니다">🌐 공통 기본값으로 지정</button>
                   </div>
                 </div>
               </div>
@@ -1005,43 +1190,33 @@
               <div id="cm-lore-card-container" class="cm-list"></div>
             </div>
 
-            <!-- TAB 6: Notes Memo -->
-            <div id="cm-master-tab-notes" class="cm-tab-pane">
-              <div class="cm-card highlight">
-                <div class="cm-card-header">
-                  <span>📋 대화방 전용 메모장 (자동 저장)</span>
-                  <span id="cm-notes-save-status" style="font-size: 11px;color: var(--cm-ok);font-weight: 600">자동 저장됨</span>
-                </div>
-                <div class="cm-editor-toolbar">
-                  <div class="cm-format-chips">
-                    <button type="button" class="cm-fmt-btn" data-fmt="bracket-round">()</button>
-                    <button type="button" class="cm-fmt-btn" data-fmt="bracket-square">[]</button>
-                    <button type="button" class="cm-fmt-btn" data-fmt="bracket-curly">{}</button>
-                    <button type="button" class="cm-fmt-btn" data-fmt="quote-double">""</button>
-                    <button type="button" class="cm-fmt-btn" data-fmt="quote-corner">「」</button>
-                    <button type="button" class="cm-fmt-btn" data-fmt="quote-white-corner">『』</button>
-                    <button type="button" class="cm-fmt-btn" data-fmt="bold">**</button>
-                    <button type="button" class="cm-fmt-btn" data-fmt="italic">*</button>
-                    <button type="button" class="cm-fmt-btn" data-fmt="pipe">｜</button>
-                    <button type="button" class="cm-fmt-btn" data-fmt="bullet">•</button>
-                  </div>
-                  <span id="cm-notes-char-info" style="font-size: 11px;color: var(--cm-text-3)">0자</span>
-                </div>
-                <textarea id="cm-notes-editor-textarea" class="cm-notes-editor" style="min-height: 220px" placeholder="이 대화방에만 유지되는 자유 메모입니다.
-복선, NPC 성격, 아이템 정보, 개인 플롯 구상 등을 자유롭게 적어두세요.
-(작성 즉시 자동 저장됩니다)"></textarea>
-                <div style="display: flex;justify-content: flex-end;margin-top: 8px">
-                  <button class="cm-btn-secondary small" id="cm-btn-notes-copy" type="button">📋 메모 복사</button>
-                </div>
-              </div>
-            </div>
-
             <!-- TAB 8: Settings & Storage -->
             <div id="cm-master-tab-settings" class="cm-tab-pane">
+              <!-- Memory -->
+              <div class="cm-card">
+                <div class="cm-card-header">
+                  <span>🧠 기억</span>
+                  <span id="cm-memory-settings-status" style="font-size: 11px;color: var(--cm-ok)"></span>
+                </div>
+                <label class="cm-switch-label full">
+                  <input id="cm-opt-auto" type="checkbox" checked>
+                  <span>전송할 때 기억·로어 자동 주입 (이 대화방)</span>
+                </label>
+                <label class="cm-switch-label full">
+                  <input id="cm-opt-llm-intervention" type="checkbox" checked>
+                  <span>LLM으로 기억 만들기 (끄면 대화 원문에서 찾아 넣기)</span>
+                </label>
+                <div class="cm-form-row">
+                  <label>LLM 모델</label>
+                  <span id="cm-llm-status" style="font-size: 12px;color: var(--cm-text-2)">확인 중…</span>
+                  <button id="cm-btn-llm-download" class="cm-btn-secondary small" type="button" hidden>모델 받기</button>
+                </div>
+              </div>
+
               <!-- View settings -->
               <div class="cm-card">
                 <div class="cm-card-header">
-                  <span>🖥️ 화면 가독성 & 가로 너비 조절</span>
+                  <span>🖥️ 화면 · 글꼴</span>
                 </div>
                 <div class="cm-form-row">
                   <label>가로 너비 실시간 조절: <b id="cm-val-width" style="color: var(--cm-text)">980px</b></label>
@@ -1050,30 +1225,47 @@
                 <div class="cm-form-row">
                   <label>너비 프리셋</label>
                   <select id="cm-opt-width" class="cm-input" style="max-width: 240px">
-                    <option value="normal">기본 (768px)</option>
-                    <option value="wide" selected>와이드 (980px - 추천)</option>
+                    <option value="normal" selected>크랙 기본</option>
+                    <option value="wide">와이드 (980px)</option>
                     <option value="ultra">울트라와이드 (1180px)</option>
                     <option value="full">전체화면 (94vw)</option>
                     <option value="custom">사용자 지정 (슬라이더)</option>
                   </select>
                 </div>
                 <div class="cm-form-row">
-                  <label>소설 본문 글꼴</label>
-                  <select id="cm-opt-font" class="cm-input" style="max-width: 240px">
-                    <option value="maruburi" selected>마루부리 (한국어 소설 최적화)</option>
-                    <option value="kopub">KoPub바탕</option>
-                    <option value="myeongjo">나눔명조</option>
-                    <option value="pretendard">Pretendard (기본 고딕)</option>
-                  </select>
+                  <label for="cm-opt-font">본문 글꼴</label>
+                  <select id="cm-opt-font" class="cm-input" style="max-width: 240px"></select>
+                </div>
+                <div class="cm-form-row" id="cm-custom-font-row" hidden>
+                  <label>직접 입력</label>
+                  <input id="cm-opt-custom-font" class="cm-input" placeholder="글꼴 이름 (예: Gaegu)" style="max-width: 150px">
+                  <input id="cm-opt-custom-font-css" class="cm-input" placeholder="웹폰트 CSS 주소 (선택)" style="max-width: 240px">
                 </div>
                 <div class="cm-form-row">
                   <label>글자 크기: <span id="cm-val-fontsize">15px</span></label>
-                  <input id="cm-opt-fontsize" type="range" min="13" max="19" value="15" step="1" style="max-width: 240px">
+                  <input id="cm-opt-fontsize" type="range" min="12" max="22" value="15" step="1" style="max-width: 240px">
                 </div>
                 <div class="cm-form-row">
                   <label>줄 간격: <span id="cm-val-lineheight">1.65</span></label>
-                  <input id="cm-opt-lineheight" type="range" min="1.4" max="2.1" value="1.65" step="0.05" style="max-width: 240px">
+                  <input id="cm-opt-lineheight" type="range" min="1.3" max="2.3" value="1.65" step="0.05" style="max-width: 240px">
                 </div>
+                <div class="cm-form-row">
+                  <label>자간: <span id="cm-val-letterspacing">기본</span></label>
+                  <input id="cm-opt-letterspacing" type="range" min="-0.05" max="0.1" value="0" step="0.01" style="max-width: 240px">
+                </div>
+                <div class="cm-form-row">
+                  <label for="cm-opt-fontweight">굵기</label>
+                  <select id="cm-opt-fontweight" class="cm-input" style="max-width: 240px">
+                    <option value="">기본</option><option value="300">가늘게</option><option value="400">보통</option><option value="500">약간 굵게</option><option value="600">굵게</option>
+                  </select>
+                </div>
+                <div class="cm-form-row">
+                  <label for="cm-opt-paragraphgap">문단 간격</label>
+                  <select id="cm-opt-paragraphgap" class="cm-input" style="max-width: 240px">
+                    <option value="">기본</option><option value="0.4">좁게</option><option value="0.9">보통</option><option value="1.4">넓게</option><option value="2">아주 넓게</option>
+                  </select>
+                </div>
+                <p id="cm-font-preview" class="cm-font-preview">크리는 은빛 열쇠를 루시아의 손에 쥐여 주었다. “이번엔 꼭 돌아올게.”</p>
                 <div style="border-top: 1px solid var(--cm-line);padding-top: 10px;margin-top: 10px">
                   <label class="cm-switch-label full">
                     <input id="cm-opt-perf" type="checkbox" checked>
@@ -1084,66 +1276,30 @@
                     <span>초상화/썸네일 이미지 메모리 상시 캐싱 (깜빡임 및 로딩 지연 제거)</span>
                   </label>
                 </div>
-                <div style="display: flex;justify-content: flex-end;margin-top: 10px">
-                  <button id="cm-btn-save-view" class="cm-btn-primary" type="button">뷰 설정 즉시 적용</button>
+                <div style="display: flex;justify-content: flex-end;margin-top: 6px">
+                  <span id="cm-view-settings-status" style="font-size: 11px;color: var(--cm-ok)"></span>
                 </div>
               </div>
 
-              <!-- Memory & Prompt Budget -->
-              <div class="cm-card">
-                <div class="cm-card-header">
-                  <span>⚙️ 클라이언트 주입 예산 & 기억 모드</span>
-                </div>
-                <label class="cm-switch-label full">
-                  <input id="cm-opt-auto" type="checkbox" checked>
-                  <span>메시지 전송 시 자동 기억/로어 주입 활성화</span>
-                </label>
-                <p class="cm-notice">전송 프롬프트는 사용자 입력을 포함해 2,000자로 고정됩니다. 남은 공간에 관련 기억을 넣습니다.</p>
-                <div class="cm-form-row">
-                  <label>Nano 기억 생성 주기 (AI 응답 몇 턴을 한 번에 읽을지)</label>
-                  <select id="cm-opt-nano-batch" class="cm-input" style="max-width: 240px">
-                    <option value="1">1턴씩</option><option value="2">2턴씩</option><option value="4" selected>4턴씩</option><option value="6">6턴씩</option><option value="10">10턴씩</option>
-                  </select>
-                </div>
-                <div style="border-top: 1px solid var(--cm-line);margin: 10px 0;padding-top: 10px">
-                  <label class="cm-switch-label full">
-                    <input id="cm-opt-auto-summary" type="checkbox" checked>
-                    <span>대화 진행 시 기억 진화 그래프 자동 갱신 (권장)</span>
-                  </label>
-                  <div class="cm-form-row" style="margin-top: 6px">
-                    <label>진화 그래프 자동 갱신 주기 (턴 단위, 기본: 20턴)</label>
-                    <input id="cm-opt-auto-summary-interval" type="number" class="cm-input" value="20" min="5" max="100" step="5">
-                  </div>
-                </div>
-                <div style="border-top: 1px solid var(--cm-line);margin: 10px 0;padding-top: 10px">
-                  <label class="cm-switch-label full">
-                    <input id="cm-opt-llm-intervention" type="checkbox" checked>
-                    <span>🤖 Gemini Nano로 기억 만들기</span>
-                  </label>
-                </div>
-                <button id="cm-btn-save-client-settings" class="cm-btn-primary" type="button">설정 저장</button>
-              </div>
 
               <!-- Storage Hygiene & GC -->
               <div class="cm-card">
                 <div class="cm-card-header">
-                  <span>💾 브라우저 저장소 관리 & 데이터 자동 최적화</span>
+                  <span>💾 저장소</span>
                   <span id="cm-storage-usage-tag" style="font-size: 11px;color: var(--cm-text);font-weight: 600">계산 중…</span>
                 </div>
-                <p style="font-size: 11.5px;color: var(--cm-text-3);margin: 0 0 8px">
-                  • <b>자동 가비지 컬렉션(GC)</b>: 매 시간마다 비정상 종료된 임시 데이터, 손상된 키, 30일 이상 미사용된 방의 찌꺼기를 백그라운드에서 자동 소거합니다.<br>
-                  • <b>시계열 노드 자동 압축</b>: 50개 노드를 초과한 대화방은 발단과 주요 분기점, 최신 상태만 남기고 자동 압축하여 브라우저 용량 팽창을 원천 차단합니다.
-                </p>
                 <div style="display: flex;gap: 8px;flex-wrap: wrap;margin-top: 10px">
-                  <button id="cm-btn-manual-gc" class="cm-btn-primary small" type="button">🧹 지금 즉시 데이터 청소 & 압축</button>
-                  <button id="cm-btn-reset-chat-storage" class="cm-btn-secondary small" type="button" style="color: var(--cm-danger)">🗑️ 현재 대화방 기억 완전 초기화</button>
+                  <button id="cm-btn-manual-gc" class="cm-btn-primary small" type="button">🧹 정리하기</button>
+                  <button id="cm-btn-backup-export" class="cm-btn-secondary small" type="button" title="기억·로어·유저노트·설정을 파일 하나로 저장">💾 백업 내보내기</button>
+                  <button id="cm-btn-backup-import" class="cm-btn-secondary small" type="button" title="백업 파일의 내용을 합쳐 넣기">📂 백업 가져오기</button>
+                  <button id="cm-btn-reset-chat-storage" class="cm-btn-secondary small" type="button" style="color: var(--cm-danger)">🗑️ 이 대화방 기억 초기화</button>
                 </div>
               </div>
 
               <!-- Analytics -->
               <div class="cm-card">
                 <div class="cm-card-header">
-                  <span>📊 오늘 통계</span>
+                  <span>📊 이 대화방</span>
                 </div>
                 <div id="cm-client-analytics" style="font-size: 12px;color: var(--cm-text-2)"></div>
               </div>
@@ -1153,12 +1309,9 @@
             <div id="cm-master-tab-export" class="cm-tab-pane">
               <div class="cm-card highlight">
                 <div class="cm-card-header">
-                  <span>📥 초고속 대화 내보내기 (Export)</span>
+                  <span>📥 대화 내보내기</span>
                   <span style="font-size: 11px;color: var(--cm-text);font-weight: 600" id="cm-export-status">대기 중</span>
                 </div>
-                <p style="font-size: 11.5px;color: var(--cm-text-3);margin: 0 0 10px">
-                  수백 턴의 대화 전체를 1초 만에 손실 없이 고속 추출하여 텍스트(.txt), 마크다운(.md) 파일로 저장하거나 클립보드에 복사합니다.
-                </p>
                 <div style="display: grid;grid-template-columns: 1fr 1fr;gap: 8px;margin-bottom: 8px">
                   <div>
                     <label style="font-size: 11px;color: var(--cm-text-3);display: block;margin-bottom: 4px">사용자 발화자명</label>
@@ -1205,10 +1358,12 @@
       document.body.appendChild(modal);
 
       // Close handlers
-      modal.querySelector('.cm-modal-close').onclick = () => modal.classList.remove('open');
-      modal.onclick = (e) => { if (e.target === modal) modal.classList.remove('open'); };
+      // Closing the window sends a user note still waiting to go to Crack.
+      modal.querySelector('.cm-modal-close').onclick = () => { flushUserNote(); modal.classList.remove('open'); };
+      modal.onclick = (e) => { if (e.target === modal) { flushUserNote(); modal.classList.remove('open'); } };
       document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && modal.classList.contains('open')) {
+          flushUserNote();
           modal.classList.remove('open');
         }
       });
@@ -1244,90 +1399,89 @@
       dispatchTabLoad(activeTab, id, modal, extraOpts);
     }
 
-    if (extraOpts?.summaryDraft && activeTab === 'deck') {
-      setupDeckDraftBanner(id, modal, extraOpts.summaryDraft);
-    }
-
     modal.classList.add('open');
   }
 
   function dispatchTabLoad(tab, id, modal, extraOpts = null) {
     if (!id) id = chatId();
-    if (tab === 'state') loadCurrentStateTab(id, modal);
-    else if (tab === 'deck') renderMemoryDeckTab(id, modal, extraOpts);
+    if (tab === 'deck') renderMemoryDeckTab(id, modal, extraOpts);
     else if (tab === 'usernote') loadUserNoteTab(id, modal);
     else if (tab === 'lore') loadLoreTab(id, modal);
-    else if (tab === 'notes') loadNotesTab(id, modal);
     else if (tab === 'settings') loadSettingsTab(id, modal);
     else if (tab === 'export') loadExportTab(id, modal);
   }
 
-  // --- Tab 1: Current State Loader ---
-  function loadCurrentStateTab(id, modal) {
-    if (!id) return;
-    chrome.storage.local.get([`currentState:${id}`], res => {
-      const s = res[`currentState:${id}`] || {};
-      const locEl = modal.querySelector('#cm-curstate-loc');
-      const objEl = modal.querySelector('#cm-curstate-obj');
-      const condEl = modal.querySelector('#cm-curstate-cond');
-      const enEl = modal.querySelector('#cm-curstate-enable');
-      if (locEl) locEl.value = s.location || '';
-      if (objEl) objEl.value = s.objective || '';
-      if (condEl) condEl.value = s.conditions || '';
-      if (enEl) enEl.checked = s.enabled !== false;
+  // --- Tab 2: Memory Evolution Deck Loader ---
+  function renderBranchNotice(id, modal) {
+    let box = modal.querySelector('#cm-deck-branch');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'cm-deck-branch';
+      box.className = 'cm-notice';
+      modal.querySelector('#cm-deck-pins')?.before(box);
+    }
+    chrome.storage.local.get(`branchOf:${id}`, res => {
+      const branch = res[`branchOf:${id}`];
+      box.hidden = !branch || chatId() !== id;
+      if (branch) box.textContent = `🌱 분기된 대화예요. 원본 대화의 ${branch.turns}번째 턴까지 같아서, 그때까지의 기억 ${branch.facts}건과 고정·로어·유저노트를 가져왔어요. 이후 기억은 이 대화에서 따로 쌓여요.`;
     });
   }
 
-  // --- Tab 2: Memory Evolution Deck Loader ---
-  function setupDeckDraftBanner(id, modal, res) {
-    const draftBox = modal.querySelector('#cm-deck-draft-box');
-    if (!draftBox || !res) return;
-
-    draftBox.style.display = 'block';
-    const tag = modal.querySelector('#cm-deck-draft-turn-tag');
-    const titleInput = modal.querySelector('#cm-deck-draft-title');
-    const contentInput = modal.querySelector('#cm-deck-draft-content');
-    const notice = modal.querySelector('#cm-deck-draft-notice');
-    const updateBtn = modal.querySelector('#cm-btn-deck-draft-update');
-    const newBtn = modal.querySelector('#cm-btn-deck-draft-new');
-    const closeBtn = modal.querySelector('#cm-btn-deck-draft-close');
-
-    if (tag) tag.textContent = `총 ${res.totalTurns || 0}턴 시계열 분석 완료`;
-    if (titleInput) titleInput.value = `기억 진화 연대기 (턴 1~${res.totalTurns || '최신'})`;
-    if (contentInput) contentInput.value = res.draftText || '';
-
-    if (notice && updateBtn) {
-      if (res.existingSummary) {
-        notice.style.display = 'block';
-        updateBtn.style.display = 'inline-flex';
-      } else {
-        notice.style.display = 'none';
-        updateBtn.style.display = 'none';
+  function renderPinnedMemories(id, modal) {
+    const box = modal.querySelector('#cm-deck-pins');
+    if (!box) return;
+    chrome.storage.local.get(`pins:${id}`, res => {
+      if (chatId() !== id) return;
+      const pins = (res[`pins:${id}`] || []).filter(pin => deckMatches(pin.text));
+      box.replaceChildren();
+      if (!pins.length) return;
+      const card = document.createElement('div');
+      card.className = 'cm-card highlight';
+      const title = document.createElement('strong');
+      title.textContent = `📌 고정한 기억 ${pins.length}건 · 항상 먼저 들어갑니다`;
+      card.append(title);
+      for (const pin of pins) {
+        const row = document.createElement('div');
+        row.className = 'cm-evolution-step cm-nano-fact';
+        const head = document.createElement('div');
+        head.className = 'cm-nano-fact-head';
+        const turn = document.createElement('button');
+        turn.type = 'button';
+        turn.className = 'cm-turn-link';
+        turn.textContent = `대화 ${pin.turn}`;
+        turn.onclick = () => jumpToTurn(pin.turn);
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'cm-btn-secondary small';
+        remove.textContent = '고정 해제';
+        remove.onclick = () => chrome.runtime.sendMessage({ type: 'TOGGLE_PIN', chatId: id, messageId: pin.messageId });
+        head.append(turn, remove);
+        // Edits save when the box loses focus; the text is what gets injected.
+        const text = document.createElement('textarea');
+        text.className = 'cm-textarea';
+        text.value = pin.text;
+        text.maxLength = 300;
+        text.rows = 2;
+        text.setAttribute('aria-label', '고정한 기억 내용');
+        text.onchange = () => chrome.runtime.sendMessage({ type: 'UPDATE_PIN', chatId: id, messageId: pin.messageId, text: text.value });
+        row.append(head, text);
+        card.append(row);
       }
-    }
+      box.append(card);
+    });
+  }
 
-    const saveAction = (action) => {
-      const t = titleInput.value.trim();
-      const c = contentInput.value.trim();
-      if (!c) { alert('요약 내용을 입력해주세요.'); return; }
-      chrome.runtime.sendMessage({
-        type: 'SAVE_SUMMARY_CARD',
-        chatId: id,
-        action,
-        card: { title: t, content: c }
-      }, r => {
-        if (r && r.success) {
-          draftBox.style.display = 'none';
-          alert('기억 카드가 성공적으로 저장되었습니다!');
-          refreshDockLabels();
-          renderMemoryDeckTab(id, modal);
-        }
-      });
-    };
-
-    if (updateBtn) updateBtn.onclick = () => saveAction('update');
-    if (newBtn) newBtn.onclick = () => saveAction('new');
-    if (closeBtn) closeBtn.onclick = () => { draftBox.style.display = 'none'; };
+  // Memory writes arrive every LLM batch. Re-rendering mid-edit threw away the edit box,
+  // so wait until nothing in the list is being edited, and coalesce bursts.
+  let deckRenderTimer = 0;
+  function scheduleDeckRender(id, modal) {
+    clearTimeout(deckRenderTimer);
+    deckRenderTimer = setTimeout(() => {
+      const list = modal.querySelector('#cm-master-tab-deck');
+      const editing = list?.querySelector('.cm-nano-fact-edit, .cm-btn-edit-deck.editing') || list?.contains(document.activeElement) && document.activeElement.matches('textarea, input:not([type="search"]), select');
+      if (editing) { scheduleDeckRender(id, modal); return; }
+      if (chatId() === id && modal.classList.contains('open')) renderMemoryDeckTab(id, modal);
+    }, 600);
   }
 
   function renderMemoryDeckTab(id, modal, extraOpts = null) {
@@ -1335,10 +1489,6 @@
     if (!container) return;
     const renderSerial = ++deckRenderSerial;
     container.innerHTML = '<div style="color: var(--cm-text-3);padding: 24px;text-align: center">진화 기억 덱 로딩 중…</div>';
-
-    if (extraOpts?.summaryDraft) {
-      setupDeckDraftBanner(id, modal, extraOpts.summaryDraft);
-    }
 
     // Filter pills click
     const pills = modal.querySelectorAll('#cm-deck-filter-pills .cm-filter-pill');
@@ -1352,54 +1502,40 @@
       };
     });
 
-    // LLM toggle (default true)
-    chrome.storage.local.get(['llmIntervention'], res => {
-      if (chatId() !== id) return;
-      const llmToggle = modal.querySelector('#cm-mem-llm-toggle');
-      if (llmToggle) {
-        llmToggle.checked = res.llmIntervention !== false;
-        llmToggle.onchange = () => {
-          if (llmToggle.checked) chrome.runtime.sendMessage({ type: 'OPEN_NANO_PANEL', chatId: id }, () => {});
-          chrome.storage.local.set({ llmIntervention: llmToggle.checked }, () => {
-            refreshDockLabels();
-            renderMemoryDeckTab(id, modal);
-            handleTyping(attachedEditor?.innerText || '');
-            if (llmToggle.checked) chrome.runtime.sendMessage({ type: 'START_NANO_MEMORY', chatId: id, force: true }).catch(() => {});
-          });
-        };
-      }
-    });
+    const search = modal.querySelector('#cm-deck-search');
+    if (search && !search.dataset.bound) {
+      search.dataset.bound = '1';
+      let searchTimer = 0;
+      search.oninput = () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => { deckSearch = search.value.trim().toLowerCase(); renderMemoryDeckTab(chatId(), modal); }, 200);
+      };
+    }
+    renderPinnedMemories(id, modal);
+    renderBranchNotice(id, modal);
 
     chrome.storage.local.get([`graph:${id}`, `summary:${id}`, `nanoMemory:${id}`, 'llmIntervention'], async res => {
       if (chatId() !== id || renderSerial !== deckRenderSerial) return;
       try {
-        if (res.llmIntervention !== false) {
-          const reply = await chrome.runtime.sendMessage({ type: 'GET_NANO_FACTS', chatId: id });
-          if (chatId() !== id || renderSerial !== deckRenderSerial) return;
-          if (!reply?.success) throw Error(reply?.error || '기억을 불러오지 못했습니다.');
-          const facts = reply.facts || [];
+        // Both modes produce keyword cards: current notes (injected) and history (kept, not injected).
+        const reply = await chrome.runtime.sendMessage({ type: 'GET_MEMORY_CARDS', chatId: id });
+        if (chatId() !== id || renderSerial !== deckRenderSerial) return;
+        if (reply?.success && reply.cards?.length) {
           container.replaceChildren();
-          if (!facts.length) {
-            container.textContent = '아직 쌓인 기억이 없습니다.';
-            return;
-          }
-          const groups = new Map();
-          for (const fact of facts) {
-            if (currentDeckFilter !== 'all' && fact.domain !== currentDeckFilter) continue;
-            const keyword = String(fact.keyword || '').toLowerCase();
-            if (!keyword) continue;
-            if (!groups.has(keyword)) groups.set(keyword, []);
-            groups.get(keyword).push(fact);
-          }
-          for (const chain of [...groups.values()].reverse()) {
+          const REASON = { updated: '갱신됨 · 주입 안 함', restated: '다시 언급됨', overflow: '휴면 · 직접 물으면 꺼냄' };
+          for (const entry of reply.cards) {
+            if (currentDeckFilter !== 'all' && entry.domain !== currentDeckFilter) continue;
+            if (!deckMatches(entry.keyword, ...entry.current.map(note => `${note.fact} ${note.kind || ''} ${(note.who || []).join(' ')}`),
+              ...entry.history.map(note => note.fact))) continue;
+            const chain = entry.current;
             const card = document.createElement('div');
             card.className = 'cm-card keyword-card';
             const title = document.createElement('strong');
-            title.textContent = chain.at(-1).keyword;
+            title.textContent = entry.keyword;
             card.append(title);
             const domain = document.createElement('span');
             domain.className = 'cm-badge';
-            domain.textContent = chain.at(-1).domain || '미분류';
+            domain.textContent = entry.domain || '미분류';
             card.append(domain);
             const exclude = document.createElement('button');
             exclude.className = 'cm-btn-secondary small';
@@ -1407,20 +1543,24 @@
             exclude.textContent = '키워드 제외';
             exclude.title = '이 키워드의 모든 기억을 숨기고 앞으로도 추출하지 않습니다';
             exclude.onclick = async () => {
-              const keyword = chain.at(-1).keyword;
+              const keyword = entry.keyword;
               if (!confirm(`‘${keyword}’ 키워드의 모든 기억을 제외할까요?`)) return;
               const result = await chrome.runtime.sendMessage({ type: 'DROP_KEYWORD', chatId: id, keyword });
               if (!result?.success) alert(result?.error || '키워드를 제외하지 못했습니다.');
             };
             card.append(exclude);
-            for (const fact of chain) {
+            for (const fact of entry.current) {
               const step = document.createElement('div');
               step.className = 'cm-evolution-step cm-nano-fact';
               if (fact.enabled === false) step.style.opacity = '0.55';
               const head = document.createElement('div');
               head.className = 'cm-nano-fact-head';
-              const turn = document.createElement('span');
-              turn.textContent = `대화 ${fact.turn}`;
+              const turn = document.createElement('button');
+              turn.type = 'button';
+              turn.className = 'cm-turn-link';
+              turn.textContent = `${fact.kind ? `${fact.kind} · ` : ''}대화 ${fact.turn}${fact.who?.length ? ` · ${fact.who.join('·')}` : ''}`;
+              turn.title = '이 대화로 이동';
+              turn.onclick = () => jumpToTurn(fact.turn);
               const controls = document.createElement('span');
               const toggleLabel = document.createElement('label');
               toggleLabel.className = 'cm-switch-label';
@@ -1494,9 +1634,38 @@
               step.append(head, body);
               card.append(step);
             }
+            if (entry.history.length) {
+              const history = document.createElement('details');
+              history.className = 'cm-card-history';
+              const summary = document.createElement('summary');
+              summary.textContent = `이력 ${entry.history.length}건`;
+              history.append(summary);
+              for (const note of [...entry.history].sort((a, b) => Number(b.turn) - Number(a.turn))) {
+                const row = document.createElement('div');
+                row.className = 'cm-card-history-row';
+                const link = document.createElement('button');
+                link.type = 'button';
+                link.className = 'cm-turn-link';
+                link.textContent = `대화 ${note.turn}`;
+                link.onclick = () => jumpToTurn(note.turn);
+                const text = document.createElement('span');
+                text.textContent = ` ${note.fact} · ${REASON[note.reason] || '이력'}`;
+                row.append(link, text);
+                history.append(row);
+              }
+              card.append(history);
+            }
             container.append(card);
           }
-          if (!container.childElementCount) container.textContent = '이 분류에 해당하는 기억이 없습니다.';
+          if (!container.childElementCount) container.textContent = deckSearch ? '검색 결과가 없습니다.' : '이 분류에 해당하는 기억이 없습니다.';
+          return;
+        }
+        if (res.llmIntervention === false) {
+          container.textContent = 'LLM이 꺼져 있어 기억 카드를 만들지 않습니다. 보낼 때마다 대화 원문에서 지금 필요한 구간을 찾아 넣습니다. 들어가는 내용은 “👁️ 프롬프트”에서 볼 수 있고, 꼭 넣을 대화는 말풍선의 📌로 고정하세요.';
+          return;
+        }
+        if (reply?.success && !reply.cards?.length) {
+          container.textContent = '아직 쌓인 기억이 없습니다.';
           return;
         }
         const graph = res[`graph:${id}`];
@@ -1539,6 +1708,7 @@
         }
 
         const filtered = cards.filter(c => {
+          if (!deckMatches(c.keyword, c.title, c.content)) return false;
           if (currentDeckFilter === 'all') return true;
           return (c.domain || '').includes(currentDeckFilter);
         });
@@ -1678,50 +1848,76 @@
     });
   }
 
-  // --- Subviews inside Tab 2 ---
-  function renderMemoryLogs(id, modal) {
-    const container = modal.querySelector('#cm-logs-list');
-    const countEl = modal.querySelector('#cm-logs-count');
-    if (!container) return;
-    container.innerHTML = '<div style="color: var(--cm-text-3);padding: 12px;text-align: center">턴별 로그 로딩 중…</div>';
-
-    chrome.storage.local.get([`graph:${id}`], res => {
-      const graph = res[`graph:${id}`];
-      if (!graph || !graph.nodes || !graph.nodes.length) {
-        container.innerHTML = '<div style="text-align: center;padding: 16px;color: var(--cm-text-4)">기록된 턴별 로그가 없습니다.</div>';
-        if (countEl) countEl.textContent = '0개 노드';
-        return;
-      }
-      if (countEl) countEl.textContent = `총 ${graph.nodes.length}개 노드`;
-      container.innerHTML = graph.nodes.map((node, idx) => `
-        <div class="cm-memory-item" style="padding: 6px 8px;margin-bottom: 6px;background: var(--cm-bg-hover);border-radius:var(--cm-r-tag);border: 1px solid var(--cm-line)">
-          <div style="display: flex;justify-content: space-between;margin-bottom: 2px">
-            <span style="font-size: 11px;font-weight: 700;color: var(--cm-text)">#${idx + 1}. [턴 ${node.turnRange}] ${node.keyword}</span>
-            <span style="font-size: 10px;color: var(--cm-text-3)">${node.role === 'speaker' ? '👤 화자' : '🏷️ 개념'}</span>
-          </div>
-          <div style="font-size: 11.5px;color: var(--cm-text-2)">${node.summary}</div>
-        </div>
-      `).reverse().join('');
+  // --- Tab 3: User Note Loader ---
+  function loadLegacyNotes(id, modal) {
+    const box = modal.querySelector('#cm-legacy-notes');
+    if (!box) return;
+    chrome.storage.local.get(`notes:${id}`, res => {
+      const text = String(res[`notes:${id}`] || '');
+      box.hidden = !text.trim();
+      modal.querySelector('#cm-legacy-notes-text').value = text;
+      modal.querySelector('#cm-btn-legacy-notes-append').onclick = () => {
+        const note = modal.querySelector('#cm-usernote-text');
+        note.value = note.value.trim() ? `${note.value.trim()}\n${text.trim()}` : text.trim();
+        note.dispatchEvent(new Event('input', { bubbles: true }));
+        note.focus();
+      };
+      modal.querySelector('#cm-btn-legacy-notes-delete').onclick = () => {
+        if (!confirm('예전 메모장 내용을 삭제할까요?')) return;
+        chrome.storage.local.remove(`notes:${id}`, () => { box.hidden = true; });
+      };
     });
   }
 
-  // --- Tab 3: User Note Loader ---
+  // Last user note sent to (or read from) Crack per chat, so an unchanged note is not sent again.
+  const sentUserNotes = new Map();
+  let flushUserNote = () => {};
+
+  function setUserNoteStatus(modal, text) {
+    const el = modal.querySelector('#cm-usernote-status');
+    if (el) el.textContent = text;
+  }
+
   function loadUserNoteTab(id, modal) {
+    loadLegacyNotes(id, modal);
     const textEl = modal.querySelector('#cm-usernote-text');
     const enableEl = modal.querySelector('#cm-usernote-enable');
-    chrome.storage.local.get([`usernote:${id}`, 'usernote:auto_enabled', 'usernote:global'], res => {
+    chrome.storage.local.get([`usernote:${id}`, 'usernote:auto_enabled', 'usernote:global', `usernoteEnabled:${id}`, 'usernote:paid_mode'], async res => {
       const localUn = res[`usernote:${id}`];
       const globalUn = res['usernote:global'] || '';
       const autoGlobal = res['usernote:auto_enabled'] !== false;
-
+      const enabled = res[`usernoteEnabled:${id}`] !== false;
+      // Crack's own note is the truth; Trace's copy only remembers a note that is switched off.
+      const native = await chrome.runtime.sendMessage({ type: 'GET_NATIVE_USERNOTE', chatId: id }).catch(() => null);
+      if (chatId() !== id) return;
+      let text = localUn || '';
+      let status = '';
+      if (native?.success && native.found) sentUserNotes.set(id, JSON.stringify([native.content, native.isExtend]));
+      if (native?.success && native.found && native.content) {
+        text = native.content;
+        status = '크랙 유저노트와 연결됨';
+        const paid = modal.querySelector('#cm-usernote-paid-mode');
+        if (paid && paid.checked !== native.isExtend) { paid.checked = native.isExtend; paid.dispatchEvent(new Event('change')); }
+      } else if (!enabled && localUn) {
+        status = '꺼져 있음 · 크랙에는 보내지 않아요';
+      } else if (!localUn && autoGlobal && globalUn) {
+        text = globalUn;
+        status = '공통 기본값 표시 중 · 고치면 이 대화방 크랙 유저노트로 저장돼요';
+      } else if (!native?.success) {
+        status = '크랙 유저노트를 읽지 못했어요';
+      }
       if (textEl) {
-        textEl.value = (localUn !== undefined && localUn !== '') ? localUn : (autoGlobal ? globalUn : '');
+        textEl.value = text;
+        // A freshly loaded note has nothing pending, and belongs to this room.
+        delete textEl.dataset.dirty;
+        textEl.dataset.chat = id;
+        // Loading is not an edit: update the counter without triggering the auto-save.
+        textEl.dataset.loading = '1';
         textEl.dispatchEvent(new Event('input', { bubbles: true }));
+        delete textEl.dataset.loading;
       }
-      if (enableEl) {
-        enableEl.checked = !!(localUn || (autoGlobal && globalUn));
-      }
-
+      if (enableEl) enableEl.checked = enabled;
+      setUserNoteStatus(modal, status);
     });
   }
 
@@ -1775,63 +1971,46 @@
     });
   }
 
-  // --- Tab 6: Notes Loader ---
-  function loadNotesTab(id, modal) {
-    const txt = modal.querySelector('#cm-notes-editor-textarea');
-    const charInfo = modal.querySelector('#cm-notes-char-info');
-    if (!txt) return;
-
-    chrome.storage.local.get([`notes:${id}`], res => {
-      txt.value = res[`notes:${id}`] || '';
-      if (charInfo) charInfo.textContent = `${txt.value.length}자`;
-    });
-  }
-
   // --- Tab 8: Settings & Storage Loader ---
   function loadSettingsTab(id, modal) {
     chrome.storage.local.get([
       'clientViewSettings',
       `auto:${id}`,
-      'autoSummaryEnabled',
-      'autoSummaryInterval',
-      'nanoBatchSize',
       'llmIntervention'
     ], res => {
-      const v = res.clientViewSettings || {};
-      const widthSelect = modal.querySelector('#cm-opt-width');
-      const widthSlider = modal.querySelector('#cm-opt-width-slider');
-      const widthVal = modal.querySelector('#cm-val-width');
-      const fontSelect = modal.querySelector('#cm-opt-font');
-      const fontSlider = modal.querySelector('#cm-opt-fontsize');
-      const fontVal = modal.querySelector('#cm-val-fontsize');
-      const lineSlider = modal.querySelector('#cm-opt-lineheight');
-      const lineVal = modal.querySelector('#cm-val-lineheight');
-      const perfEl = modal.querySelector('#cm-opt-perf');
-      const imgEl = modal.querySelector('#cm-opt-imgpreload');
-
-      if (widthSelect) widthSelect.value = v.width || 'wide';
-      if (widthSlider) widthSlider.value = v.customWidth || 980;
-      if (widthVal) widthVal.textContent = `${v.customWidth || 980}px`;
-      if (fontSelect) fontSelect.value = v.font || 'maruburi';
-      if (fontSlider) fontSlider.value = v.fontSize || 15;
-      if (fontVal) fontVal.textContent = `${v.fontSize || 15}px`;
-      if (lineSlider) lineSlider.value = v.lineHeight || 1.65;
-      if (lineVal) lineVal.textContent = v.lineHeight || '1.65';
-      if (perfEl) perfEl.checked = v.perfOpt !== false;
-      if (imgEl) imgEl.checked = v.imagePreload !== false;
+      const v = { ...DEFAULT_VIEW, ...(res.clientViewSettings || {}) };
+      const q = selector => modal.querySelector(selector);
+      const fontSelect = q('#cm-opt-font');
+      if (fontSelect && !fontSelect.options.length) {
+        for (const [value, font] of Object.entries(READING_FONTS)) fontSelect.add(new Option(font.label, value));
+      }
+      q('#cm-opt-width').value = v.width;
+      q('#cm-opt-width-slider').value = v.customWidth;
+      q('#cm-val-width').textContent = `${v.customWidth}px`;
+      fontSelect.value = READING_FONTS[v.font] ? v.font : 'default';
+      q('#cm-opt-custom-font').value = v.customFont || '';
+      q('#cm-opt-custom-font-css').value = v.customFontCss || '';
+      q('#cm-custom-font-row').hidden = v.font !== 'custom';
+      q('#cm-opt-fontsize').value = v.fontSize;
+      q('#cm-val-fontsize').textContent = `${v.fontSize}px`;
+      q('#cm-opt-lineheight').value = v.lineHeight;
+      q('#cm-val-lineheight').textContent = v.lineHeight;
+      q('#cm-opt-letterspacing').value = v.letterSpacing || 0;
+      q('#cm-val-letterspacing').textContent = Number(v.letterSpacing) ? `${v.letterSpacing}em` : '기본';
+      q('#cm-opt-fontweight').value = v.fontWeight || '';
+      q('#cm-opt-paragraphgap').value = v.paragraphGap || '';
+      q('#cm-opt-perf').checked = v.perfOpt !== false;
+      q('#cm-opt-imgpreload').checked = v.imagePreload !== false;
+      updateFontPreview(modal);
 
       const autoEl = modal.querySelector('#cm-opt-auto');
-      const sumEl = modal.querySelector('#cm-opt-auto-summary');
-      const intEl = modal.querySelector('#cm-opt-auto-summary-interval');
       const llmEl = modal.querySelector('#cm-opt-llm-intervention');
 
       if (autoEl) autoEl.checked = res[`auto:${id}`] !== false;
-      if (sumEl) sumEl.checked = res.autoSummaryEnabled !== false;
-      if (intEl) intEl.value = res.autoSummaryInterval || 20;
-      const nanoBatchEl = modal.querySelector('#cm-opt-nano-batch');
-      if (nanoBatchEl) nanoBatchEl.value = String(res.nanoBatchSize || 4);
       if (llmEl) llmEl.checked = res.llmIntervention !== false; // default true
     });
+
+    refreshLLMStatus(modal);
 
     // Refresh storage usage
     const storageTag = modal.querySelector('#cm-storage-usage-tag');
@@ -1850,8 +2029,27 @@
       const el = modal.querySelector('#cm-client-analytics');
       if (!el) return;
       el.innerHTML = s.mode === 'nano'
-        ? `Nano 처리 <b>${s.processedTurns}/${s.totalTurns}턴</b> · 대기 ${s.pendingTurns}턴 · 기억 사실 ${s.factCount}건<br>이 대화 오늘 전송 <b>${s.roomToday.sends}회</b> · 주입 ${s.roomToday.injected}건`
+        ? `LLM 처리 <b>${s.processedTurns}/${s.totalTurns}턴</b> · 대기 ${s.pendingTurns}턴 · 기억 사실 ${s.factCount}건<br>이 대화 오늘 전송 <b>${s.roomToday.sends}회</b> · 주입 ${s.roomToday.injected}건`
         : `추출식 대화 <b>${s.totalTurns}턴</b> · 기억 노드 ${s.graphNodes}개<br>이 대화 오늘 전송 <b>${s.roomToday.sends}회</b> · 주입 ${s.roomToday.injected}건`;
+    });
+  }
+
+  function refreshLLMStatus(modal) {
+    const statusEl = modal.querySelector('#cm-llm-status');
+    const downloadBtn = modal.querySelector('#cm-btn-llm-download');
+    if (!statusEl) return;
+    statusEl.textContent = '확인 중…';
+    chrome.runtime.sendMessage({ type: 'GET_LLM_STATUS' }, res => {
+      const state = res?.state || 'unknown';
+      statusEl.textContent = {
+        available: `준비됨${res.host === 'sidepanel' ? ' (사이드패널에서 실행)' : ''}`,
+        downloadable: '모델을 받아야 합니다',
+        downloading: '모델 받는 중…',
+        unavailable: '이 기기에서는 쓸 수 없습니다',
+        unsupported: '이 Chrome에서는 쓸 수 없습니다',
+        nohost: '실행 준비 안 됨'
+      }[state] || '상태를 확인하지 못했습니다';
+      if (downloadBtn) downloadBtn.hidden = !['downloadable', 'downloading', 'nohost'].includes(state);
     });
   }
 
@@ -1868,72 +2066,18 @@
   function bindMasterModalEvents(modal) {
     const id = () => chatId();
 
-    // 1. Current State Save
-    modal.querySelector('#cm-btn-save-curstate').onclick = () => {
-      const currentId = id();
-      const loc = modal.querySelector('#cm-curstate-loc').value.trim();
-      const obj = modal.querySelector('#cm-curstate-obj').value.trim();
-      const cond = modal.querySelector('#cm-curstate-cond').value.trim();
-      const enabled = modal.querySelector('#cm-curstate-enable').checked;
-      const statusEl = modal.querySelector('#cm-curstate-status');
-
-      chrome.storage.local.set({
-        [`currentState:${currentId}`]: { location: loc, objective: obj, conditions: cond, enabled }
-      }, () => {
-        if (statusEl) {
-          statusEl.textContent = '저장 완료!';
-          setTimeout(() => { statusEl.textContent = ''; }, 2000);
-        }
-        refreshDockLabels();
-        handleTyping(attachedEditor?.innerText || '');
-      });
-    };
-
     // 2. Evolution Deck Controls (Full Rebuild)
     modal.querySelector('#cm-btn-mem-rebuild').onclick = () => {
-      if (nanoModeEnabled) {
-        const currentId = id();
-        if (!confirm('현재 대화의 기억을 처음부터 다시 만들까요? 새 분석이 모두 끝나면 기존 기억을 교체합니다.')) return;
-        chrome.runtime.sendMessage({ type: 'OPEN_NANO_PANEL', chatId: currentId, rebuild: true }, panel => {
-          if (!panel?.success) alert(panel?.error || '모델 화면을 열지 못했습니다.');
-        });
-        return;
-      }
       const currentId = id();
-      const btn = modal.querySelector('#cm-btn-mem-rebuild');
-      btn.textContent = '⏳ 전체 재분석 중...';
-      btn.disabled = true;
-      const progressId = startAnalysis('rebuild', '전체 재분석');
-      chrome.runtime.sendMessage({ type: 'REBUILD_EVOLUTION_GRAPH', chatId: currentId, progressId }, r => {
-        finishAnalysis('rebuild');
-        btn.textContent = '⚡ 전체 다시 읽기';
-        btn.disabled = false;
-        if (r && r.success) {
-          if (r.nanoStarted) return;
-          alert(`전체 대화 시계열 진화 그래프가 성공적으로 재분석되었습니다!\n(노드: ${r.nodeCount}개, 진화 링크: ${r.edgeCount}개)`);
-          renderMemoryDeckTab(currentId, modal);
-          refreshDockLabels();
-        } else {
-          alert(r?.error || '재구축 실패');
-        }
+      if (!confirm('현재 대화의 기억을 처음부터 다시 만들까요? 새 분석이 모두 끝나면 기존 기억을 교체합니다.')) return;
+      chrome.runtime.sendMessage({ type: 'START_NANO_MEMORY', chatId: currentId, force: true, rebuild: true }, result => {
+        if (!result?.success) alert(result?.error || '다시 읽기를 시작하지 못했습니다.');
       });
     };
 
     modal.querySelector('#cm-btn-mem-sum-now').onclick = () => {
       triggerSummarization();
     };
-
-    // Sub-views toggles
-    const logsBtn = modal.querySelector('#cm-btn-toggle-logs');
-    const logsBox = modal.querySelector('#cm-deck-subview-logs');
-    if (logsBtn && logsBox) {
-      logsBtn.onclick = () => {
-        const isHidden = logsBox.style.display === 'none';
-        logsBox.style.display = isHidden ? 'block' : 'none';
-        logsBtn.textContent = isHidden ? '📅 턴별 원본 슬라이딩 로그 접기' : '📅 턴별 원본 슬라이딩 로그 보기';
-        if (isHidden) renderMemoryLogs(id(), modal);
-      };
-    }
 
     // 3. User Note Autobrackets & Limit Switching
     const userNoteText = modal.querySelector('#cm-usernote-text');
@@ -1993,20 +2137,50 @@
       navigator.clipboard.writeText(text).then(() => alert('유저노트 텍스트가 클립보드에 복사되었습니다!'));
     };
 
-    // Save strictly to this room
-    modal.querySelector('#cm-btn-save-usernote').onclick = () => {
-      const currentId = id();
-      const text = userNoteText.value.trim();
+    // The user note is kept in Trace as you type, but sent to Crack once: when you leave the
+    // box, close the Trace window, or stop typing for a few seconds, and only if it changed.
+    let userNoteSaveTimer = 0;
+    let userNoteSendTimer = 0;
+    const userNotePayload = () => {
       const enabled = modal.querySelector('#cm-usernote-enable').checked;
-
-      chrome.storage.local.set({
-        [`usernote:${currentId}`]: enabled ? text : ''
-      }, () => {
-        alert('현재 대화방 전용 유저노트가 저장되었습니다.\n(메시지 전송 시 순정 웹소켓 속성으로 100% 자동 분리 주입됩니다)');
-        refreshDockLabels();
-        handleTyping(attachedEditor?.innerText || '');
-      });
+      return { enabled, content: enabled ? userNoteText.value.trim() : '', isExtend: Boolean(modal.querySelector('#cm-usernote-paid-mode')?.checked) };
     };
+    const sendUserNote = async () => {
+      clearTimeout(userNoteSendTimer);
+      // The room the note was written in, even if the page has moved to another chat since.
+      const currentId = userNoteText.dataset.chat;
+      if (!currentId || userNoteText.dataset.dirty !== '1') return;
+      const { enabled, content, isExtend } = userNotePayload();
+      const key = JSON.stringify([content, isExtend]);
+      if (sentUserNotes.get(currentId) === key) { delete userNoteText.dataset.dirty; setUserNoteStatus(modal, '크랙에 반영됨'); return; }
+      setUserNoteStatus(modal, '크랙에 보내는 중…');
+      const result = await chrome.runtime.sendMessage({ type: 'SET_NATIVE_USERNOTE', chatId: currentId, content, isExtend })
+        .catch(error => ({ error: String(error) }));
+      if (result?.success) { sentUserNotes.set(currentId, key); delete userNoteText.dataset.dirty; }
+      setUserNoteStatus(modal, !result?.success ? `크랙에 반영 실패: ${result?.error || '알 수 없음'}`
+        : enabled ? '크랙에 반영됨' : '꺼짐 · 크랙 유저노트를 비웠어요 (내용은 여기 남아 있어요)');
+    };
+    flushUserNote = sendUserNote;
+    const saveUserNote = ({ now = false } = {}) => {
+      const currentId = id();
+      if (!currentId) return;
+      userNoteText.dataset.dirty = '1';
+      userNoteText.dataset.chat = currentId;
+      clearTimeout(userNoteSaveTimer);
+      clearTimeout(userNoteSendTimer);
+      setUserNoteStatus(modal, '입력 중… 다 쓰고 나면 크랙에 보내요');
+      userNoteSaveTimer = setTimeout(() => {
+        const { enabled } = userNotePayload();
+        chrome.storage.local.set({ [`usernote:${currentId}`]: userNoteText.value.trim(), [`usernoteEnabled:${currentId}`]: enabled }, refreshDockLabels);
+      }, 300);
+      if (now) sendUserNote();
+      else userNoteSendTimer = setTimeout(sendUserNote, 3000);
+    };
+    userNoteText.addEventListener('input', () => { if (!userNoteText.dataset.loading) saveUserNote(); });
+    userNoteText.addEventListener('blur', () => sendUserNote());
+    // The paid 2,000-character mode is part of Crack's note (isExtend); only a user's click saves it.
+    modal.querySelector('#cm-usernote-paid-mode')?.addEventListener('change', event => { if (event.isTrusted) saveUserNote({ now: true }); });
+    modal.querySelector('#cm-usernote-enable').addEventListener('change', () => saveUserNote({ now: true }));
 
     // Save globally for all rooms
     modal.querySelector('#cm-btn-save-usernote-global').onclick = () => {
@@ -2016,7 +2190,7 @@
         'usernote:global': text,
         'usernote:auto_enabled': true
       }, () => {
-        alert('모든 대화방에 기본 적용되는 공통 유저노트로 저장되었습니다.');
+        setUserNoteStatus(modal, '공통 기본값으로 지정했어요');
         refreshDockLabels();
         handleTyping(attachedEditor?.innerText || '');
       });
@@ -2081,93 +2255,103 @@
       } catch (e) { alert(e.message); }
     };
 
-    // 6. Notes Debounced Auto-Save
-    const notesEditor = modal.querySelector('#cm-notes-editor-textarea');
-    const notesStatus = modal.querySelector('#cm-notes-save-status');
-    const notesCharInfo = modal.querySelector('#cm-notes-char-info');
-    let noteDebounce = null;
-
-    setupAutoBrackets(notesEditor, null, notesCharInfo, 10000);
-
-    notesEditor.addEventListener('input', () => {
-      notesStatus.textContent = '저장 중…';
-      notesStatus.style.color = 'var(--cm-warn)';
-      notesCharInfo.textContent = `${notesEditor.value.length}자`;
-
-      clearTimeout(noteDebounce);
-      noteDebounce = setTimeout(() => {
-        chrome.storage.local.set({ [`notes:${id()}`]: notesEditor.value }, () => {
-          notesStatus.textContent = '자동 저장됨';
-          notesStatus.style.color = 'var(--cm-ok)';
-        });
-      }, 300);
-    });
-
-    modal.querySelectorAll('#cm-master-tab-notes .cm-fmt-btn').forEach(btn => {
-      btn.onclick = () => {
-        handleFormatClick(notesEditor, btn.dataset.fmt, notesCharInfo);
-      };
-    });
-
-    modal.querySelector('#cm-btn-notes-copy').onclick = () => {
-      navigator.clipboard.writeText(notesEditor.value).then(() => alert('메모 내용이 클립보드에 복사되었습니다!'));
-    };
-
     // 7. Settings & Storage Events
-    const widthSlider = modal.querySelector('#cm-opt-width-slider');
-    const widthVal = modal.querySelector('#cm-val-width');
-    const widthSelect = modal.querySelector('#cm-opt-width');
-    if (widthSlider) {
-      widthSlider.oninput = (e) => {
-        const px = `${e.target.value}px`;
-        if (widthVal) widthVal.textContent = px;
-        if (widthSelect) widthSelect.value = 'custom';
-        document.body.setAttribute('data-cm-custom-width', 'true');
-        document.documentElement.style.setProperty('--cm-chat-width', px);
+    // View settings apply and save as they change.
+    const readView = () => {
+      const q = selector => modal.querySelector(selector);
+      return {
+        width: q('#cm-opt-width').value,
+        customWidth: q('#cm-opt-width-slider').value,
+        font: q('#cm-opt-font').value,
+        customFont: q('#cm-opt-custom-font').value.trim(),
+        customFontCss: q('#cm-opt-custom-font-css').value.trim(),
+        fontSize: q('#cm-opt-fontsize').value,
+        lineHeight: q('#cm-opt-lineheight').value,
+        letterSpacing: q('#cm-opt-letterspacing').value,
+        fontWeight: q('#cm-opt-fontweight').value,
+        paragraphGap: q('#cm-opt-paragraphgap').value,
+        perfOpt: q('#cm-opt-perf').checked,
+        imagePreload: q('#cm-opt-imgpreload').checked
       };
+    };
+    let viewSaveTimer = 0;
+    const onViewChange = event => {
+      const q = selector => modal.querySelector(selector);
+      if (event?.target?.id === 'cm-opt-width-slider') q('#cm-opt-width').value = 'custom';
+      const view = readView();
+      q('#cm-val-width').textContent = `${view.customWidth}px`;
+      q('#cm-val-fontsize').textContent = `${view.fontSize}px`;
+      q('#cm-val-lineheight').textContent = view.lineHeight;
+      q('#cm-val-letterspacing').textContent = Number(view.letterSpacing) ? `${view.letterSpacing}em` : '기본';
+      q('#cm-custom-font-row').hidden = view.font !== 'custom';
+      applyViewSettings(view);
+      updateFontPreview(modal);
+      clearTimeout(viewSaveTimer);
+      viewSaveTimer = setTimeout(() => chrome.storage.local.set({ clientViewSettings: view }, () => {
+        const status = q('#cm-view-settings-status');
+        if (status) { status.textContent = '저장됨'; setTimeout(() => { status.textContent = ''; }, 1200); }
+      }), 300);
+    };
+    for (const selector of ['#cm-opt-width', '#cm-opt-width-slider', '#cm-opt-font', '#cm-opt-custom-font', '#cm-opt-custom-font-css',
+      '#cm-opt-fontsize', '#cm-opt-lineheight', '#cm-opt-letterspacing', '#cm-opt-fontweight', '#cm-opt-paragraphgap',
+      '#cm-opt-perf', '#cm-opt-imgpreload']) {
+      const el = modal.querySelector(selector);
+      el.addEventListener(el.type === 'range' || el.tagName === 'INPUT' && el.type !== 'checkbox' ? 'input' : 'change', onViewChange);
     }
 
-    modal.querySelector('#cm-opt-fontsize').oninput = (e) => {
-      modal.querySelector('#cm-val-fontsize').textContent = `${e.target.value}px`;
-    };
-    modal.querySelector('#cm-opt-lineheight').oninput = (e) => {
-      modal.querySelector('#cm-val-lineheight').textContent = e.target.value;
-    };
-
-    modal.querySelector('#cm-btn-save-view').onclick = () => {
-      const settings = {
-        width: modal.querySelector('#cm-opt-width').value,
-        customWidth: modal.querySelector('#cm-opt-width-slider')?.value || '980',
-        font: modal.querySelector('#cm-opt-font').value,
-        fontSize: modal.querySelector('#cm-opt-fontsize').value,
-        lineHeight: modal.querySelector('#cm-opt-lineheight').value,
-        perfOpt: modal.querySelector('#cm-opt-perf').checked,
-        imagePreload: modal.querySelector('#cm-opt-imgpreload').checked
-      };
-      chrome.storage.local.set({ clientViewSettings: settings }, () => {
-        applyClientViewSettings();
-        alert('뷰 및 성능 설정이 즉시 적용되었습니다.');
-      });
-    };
-
-    modal.querySelector('#cm-btn-save-client-settings').onclick = () => {
+    // Memory settings save on change.
+    const saveMemorySettings = () => {
       const currentId = id();
-      const isAuto = modal.querySelector('#cm-opt-auto').checked;
-      const autoSummary = modal.querySelector('#cm-opt-auto-summary').checked;
-      const autoSummaryInterval = Number(modal.querySelector('#cm-opt-auto-summary-interval').value) || 20;
-      const llmIntervention = modal.querySelector('#cm-opt-llm-intervention')?.checked ?? true;
-      const nanoBatchSize = Number(modal.querySelector('#cm-opt-nano-batch').value) || 4;
-      if (llmIntervention) chrome.runtime.sendMessage({ type: 'OPEN_NANO_PANEL' }, () => {});
-
+      const llmIntervention = modal.querySelector('#cm-opt-llm-intervention').checked;
       chrome.storage.local.set({
-        [`auto:${currentId}`]: isAuto,
-        autoSummaryEnabled: autoSummary,
-        autoSummaryInterval: autoSummaryInterval,
-        nanoBatchSize,
-        llmIntervention: llmIntervention
+        [`auto:${currentId}`]: modal.querySelector('#cm-opt-auto').checked,
+        llmIntervention
       }, () => {
-        alert('설정이 저장되었습니다.');
+        const status = modal.querySelector('#cm-memory-settings-status');
+        if (status) { status.textContent = '저장됨'; setTimeout(() => { status.textContent = ''; }, 1500); }
+        refreshDockLabels();
+        handleTyping(attachedEditor?.innerText || '');
+        if (llmIntervention && currentId) chrome.runtime.sendMessage({ type: 'START_NANO_MEMORY', chatId: currentId }).catch(() => {});
       });
+    };
+    for (const selector of ['#cm-opt-auto', '#cm-opt-llm-intervention']) {
+      modal.querySelector(selector).onchange = saveMemorySettings;
+    }
+    modal.querySelector('#cm-btn-llm-download').onclick = () => {
+      // Model download needs a click inside an extension page, so hand off to the side panel.
+      chrome.runtime.sendMessage({ type: 'OPEN_NANO_PANEL', chatId: id() }, result => {
+        if (!result?.success) modal.querySelector('#cm-llm-status').textContent = result?.error || '사이드패널을 열지 못했습니다.';
+      });
+    };
+
+    // Backup: everything Trace stores except chat snapshots (re-fetched from Crack) and model scores.
+    const BACKUP_SKIP = /^(?:snap:|modelScores|modelNames|nanoMemoryDraft:)/;
+    modal.querySelector('#cm-btn-backup-export').onclick = async () => {
+      const all = await chrome.storage.local.get(null);
+      const data = Object.fromEntries(Object.entries(all).filter(([key]) => !BACKUP_SKIP.test(key)));
+      const d = new Date();
+      const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+      downloadTextFile(`trace-backup-${stamp}.json`, JSON.stringify({ app: 'Trace', version: 1, savedAt: d.toISOString(), data }));
+    };
+    modal.querySelector('#cm-btn-backup-import').onclick = () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'application/json,.json';
+      input.onchange = async () => {
+        try {
+          const backup = JSON.parse(await input.files[0].text());
+          if (backup?.app !== 'Trace' || !backup.data || typeof backup.data !== 'object') throw Error('Trace 백업 파일이 아닙니다.');
+          const entries = Object.entries(backup.data).filter(([key]) => !BACKUP_SKIP.test(key));
+          if (!confirm(`${entries.length}개 항목을 가져옵니다. 같은 이름의 기존 데이터는 백업 내용으로 바뀝니다. 계속할까요?`)) return;
+          await chrome.storage.local.set(Object.fromEntries(entries));
+          alert('백업을 가져왔습니다.');
+          refreshDockLabels();
+          loadSettingsTab(id(), modal);
+        } catch (error) {
+          alert(`가져오지 못했습니다: ${error.message || error}`);
+        }
+      };
+      input.click();
     };
 
     const manualGcBtn = modal.querySelector('#cm-btn-manual-gc');
@@ -2176,7 +2360,7 @@
         manualGcBtn.textContent = '⏳ 최적화 정리 중…';
         manualGcBtn.disabled = true;
         chrome.runtime.sendMessage({ type: 'RUN_STORAGE_CLEANUP' }, res => {
-          manualGcBtn.textContent = '🧹 지금 즉시 데이터 청소 & 압축';
+          manualGcBtn.textContent = '🧹 정리하기';
           manualGcBtn.disabled = false;
           if (res && res.success) {
             loadSettingsTab(id(), modal);
@@ -2359,7 +2543,7 @@
       const isUser = !!auto && g.contains(auto);
 
       let text = mds.map(m => m.innerText || m.textContent || '').join('\n\n');
-      text = text.replace(/<!--CRACK_UBIS_CONTEXT_START[\s\S]*?CRACK_UBIS_CONTEXT_END-->/g, '').trim();
+      text = text.replace(OWN_BLOCK_RE, '').trim();
       if (!o.includeInfo) {
         text = text.replace(/```(?:INFO)?[^`]*```/g, '').replace(/\[(?:💼|🤝|📝)[^\]\n]*\][^\n]*/g, '').trim();
       }
@@ -2411,7 +2595,12 @@
         return;
       }
 
-      statusEl.textContent = `추출 완료 (${res.count}개 메시지)`;
+      // Say plainly when this is not the whole chat.
+      const warning = res.source === 'dom'
+        ? `화면에 불러온 ${res.count}개만 추출했어요${res.reason ? ` (전체 추출 실패: ${res.reason})` : ''}`
+        : res.incomplete ? `일부만 추출했어요: ${res.incomplete}` : '';
+      statusEl.textContent = warning || `전체 ${res.count}개 메시지 추출 완료`;
+      if (warning) alert(warning);
       previewInfo.textContent = `${res.count}개 턴`;
       const content = format === 'md' ? res.md : res.txt;
       previewEl.textContent = content.slice(0, 1500) + (content.length > 1500 ? '\n\n... (이하 생략)' : '');
@@ -2433,7 +2622,7 @@
 
     if (useDom) {
       const res = domExtractChat(opts);
-      handleResult(res);
+      handleResult({ ...res, source: 'dom' });
     } else {
       chrome.runtime.sendMessage({
         type: 'EXPORT_CHAT_FULL',
@@ -2443,7 +2632,7 @@
         if (!res || !res.success) {
           const domRes = domExtractChat(opts);
           if (domRes && domRes.count) {
-            handleResult(domRes);
+            handleResult({ ...domRes, source: 'dom', reason: res?.error || chrome.runtime.lastError?.message || '응답 없음' });
           } else {
             statusEl.textContent = '추출 실패';
             alert(res?.error || '대화 추출에 실패했습니다.');
@@ -2459,6 +2648,7 @@
   function loop() {
     const id = chatId();
     if (id && id !== currentChatId) {
+      flushUserNote();
       currentChatId = id;
       currentDeckFilter = 'all';
       document.getElementById('cm-master-modal')?.classList.remove('open');
@@ -2470,6 +2660,7 @@
       if (preview) preview.value = '새 대화의 입력을 기다리는 중입니다.';
       if (previewStatus) previewStatus.textContent = '';
       analysisTasks.clear();
+      bubbleTurns.clear();
       nanoError = '';
       updateAnalysisProgress();
       refreshDockLabels();
@@ -2491,20 +2682,67 @@
 
     mountComposerUI();
     maskInjectedMessages();
-    preloadImages();
+  }
+
+  // After the extension is reloaded or updated, this tab keeps running the old
+  // script with a dead chrome.* bridge until the page is refreshed. Stop quietly
+  // and tell the user instead of throwing "Extension context invalidated".
+  let loopTimer = 0;
+  let domObserver = null;
+  let retired = false;
+
+  function extensionAlive() {
+    try { return Boolean(chrome.runtime?.id); } catch { return false; }
+  }
+
+  function retireIfOrphaned() {
+    if (retired) return true;
+    if (extensionAlive()) return false;
+    retired = true;
+    clearInterval(loopTimer);
+    domObserver?.disconnect();
+    // A payload staged by this old script would inject stale memory; drop it.
+    window.postMessage({ type: 'CRACK_MATRIX_CLEAR_STAGE' }, '*');
+    const bar = document.createElement('div');
+    bar.className = 'cm-orphan-bar';
+    bar.setAttribute('role', 'status');
+    bar.textContent = 'Trace가 업데이트되었습니다. 페이지를 새로고침하면 다시 동작합니다. ';
+    const reload = document.createElement('button');
+    reload.type = 'button';
+    reload.textContent = '새로고침';
+    reload.onclick = () => location.reload();
+    bar.append(reload);
+    document.body.append(bar);
+    return true;
+  }
+
+  for (const type of ['error', 'unhandledrejection']) {
+    window.addEventListener(type, event => {
+      const message = String(event.message || event.reason?.message || '');
+      if (message.includes('Extension context invalidated') && retireIfOrphaned()) event.preventDefault();
+    });
   }
 
   function init() {
     applyClientViewSettings();
     loop();
 
-    setInterval(loop, 1200);
+    loopTimer = setInterval(() => { if (!retireIfOrphaned()) loop(); }, 1200);
 
-    new MutationObserver(() => {
-      mountComposerUI();
-      maskInjectedMessages();
-      scheduleNativeBadges();
-    }).observe(document.body, { childList: true, subtree: true });
+    // Streaming replies mutate the DOM many times a second; coalesce the work.
+    let domWorkTimer = 0;
+    domObserver = new MutationObserver(() => {
+      if (domWorkTimer) return;
+      domWorkTimer = setTimeout(() => {
+        domWorkTimer = 0;
+        if (retireIfOrphaned()) return;
+        mountComposerUI();
+        maskInjectedMessages();
+        scheduleNativeBadges();
+        scheduleBubbleTools();
+      }, 150);
+    });
+    domObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });

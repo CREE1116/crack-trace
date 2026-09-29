@@ -8,6 +8,7 @@
     "unlimitedStorage",
     "cookies",
     "sidePanel",
+    "offscreen",
     "tabs",
     "webNavigation",
     "alarms"

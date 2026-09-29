@@ -16,7 +16,6 @@
         originalPrompt: (e.data.originalPrompt || '').trim(),
         chatId: String(e.data.chatId || ''),
         injectedContent: e.data.injectedContent,
-        userNote: e.data.userNote || '',
         injectedCount: Math.max(0, Number(e.data.injectedCount) || 0)
       };
     }
@@ -39,16 +38,8 @@
 
         // If pre-staged injection is ready
         if (window.__CRACK_MATRIX_STAGED_CONTEXT) {
+          // The user note is not sent with messages: Crack keeps it per chat (see SET_NATIVE_USERNOTE).
           const staged = window.__CRACK_MATRIX_STAGED_CONTEXT;
-          const uNote = staged.userNote;
-
-          // Native User Note injection into WebSocket payload
-          if (uNote) {
-            if ('userNote' in payload) payload.userNote = uNote;
-            else if ('user_note' in payload) payload.user_note = uNote;
-            else payload.userNote = uNote;
-          }
-
           if (staged.originalPrompt === outgoing) {
             const content = staged.injectedContent;
             const field = ['message', 'content', 'text'].find(k => typeof payload[k] === 'string') || 'message';
@@ -59,11 +50,6 @@
             const sent = nativeSend.call(this, rewritten);
             window.postMessage({ type: 'CRACK_MATRIX_INJECTED_SENT' }, '*');
             window.postMessage({ type: 'CRACK_MATRIX_SEND_RECORDED', chatId: roomFromPath(), injectedCount: staged.injectedCount }, '*');
-            return sent;
-          } else if (uNote) {
-            const rewritten = `42${match[1] || ''}${match[2]}${JSON.stringify(events)}`;
-            const sent = nativeSend.call(this, rewritten);
-            window.postMessage({ type: 'CRACK_MATRIX_SEND_RECORDED', chatId: roomFromPath(), injectedCount: 0 }, '*');
             return sent;
           }
         }
