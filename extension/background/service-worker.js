@@ -45,6 +45,10 @@ function normalizedKeyword(value) {
   return String(value || '').normalize('NFKC').trim().toLowerCase();
 }
 
+function compactEvidence(value) {
+  return String(value || '').normalize('NFKC').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
 function effectiveNanoFacts(facts, overrides = {}, droppedKeywords = []) {
   const dropped = new Set(droppedKeywords.map(normalizedKeyword));
   return (facts || []).flatMap(fact => {
@@ -61,19 +65,30 @@ async function loadNanoFacts(chatId) {
     data[`nanoOverrides:${chatId}`] || {}, data[`dropKw:${chatId}`] || []);
 }
 
-function parseNanoFacts(raw, turn, sourceId, limit = 16, allowedTurns = [], candidateDomains = new Map()) {
+function parseNanoFacts(raw, turn, sourceId, limit = 16, allowedTurns = [], candidateDomains = new Map(), sourceMessages = []) {
   const cleaned = String(raw || '').trim().replace(/^```(?:json)?\s*|\s*```$/gi, '');
   const parsed = JSON.parse(cleaned);
   if (!Array.isArray(parsed)) throw Error('Nano memory response is not an array');
   const allowed = new Set(allowedTurns);
+  const sourceByTurn = new Map(sourceMessages.map(row => [row.turn, compactEvidence(row.text)]));
+  const allSource = [...sourceByTurn.values()].join('|');
+  const seen = new Set();
   return parsed.slice(0, limit).flatMap((item, index) => {
     const keyword = String(item?.keyword || '').trim().slice(0, 40);
     const fact = String(item?.fact || '').trim().slice(0, 300);
     if (!keyword || !fact || !/[가-힣]/.test(fact)) return [];
     const claimedTurn = Number(item?.turn);
-    const sourceTurn = allowed.has(claimedTurn) ? claimedTurn : turn;
+    const sourceTurn = allowed.has(claimedTurn) ? claimedTurn : allowedTurns.length === 1 ? allowedTurns[0] : null;
+    if (sourceTurn === null) return [];
+    const anchor = compactEvidence(keyword);
+    if (sourceMessages.length && (!anchor || !allSource.includes(anchor))) return [];
+    const technical = /(?:lsa|nlp|bm25|gemini|프롬프트|인젝션|키워드|로컬분석)/i;
+    if (sourceMessages.length && technical.test(fact) && !technical.test(sourceMessages.map(row => row.text).join(' '))) return [];
+    const fingerprint = `${anchor}:${compactEvidence(fact)}`;
+    if (seen.has(fingerprint)) return [];
+    seen.add(fingerprint);
     const claimedDomain = String(item?.domain || '').trim();
-    const domain = MEMORY_DOMAINS.has(claimedDomain) ? claimedDomain : (candidateDomains.get(keyword) || '개념');
+    const domain = candidateDomains.get(keyword) || (MEMORY_DOMAINS.has(claimedDomain) ? claimedDomain : '개념');
     return [{ id: `${sourceId}:${factFingerprint(keyword, fact)}:${index}`, keyword, fact, domain, turn: sourceTurn, sourceId }];
   });
 }
@@ -230,7 +245,9 @@ async function processNanoMemory(chatId, messages, report = () => {}, options = 
         }
         const dropped = (await chrome.storage.local.get(`dropKw:${chatId}`))[`dropKw:${chatId}`] || [];
         const excluded = new Set(dropped.map(normalizedKeyword));
-        const next = parseNanoFacts(result.text, end.index + 1, end.message.id, Math.min(16, count * 4), turns, analysis.domains)
+        const sourceMessages = windowMessages.map((message, offset) => ({ turn: startIndex + offset + 1,
+          text: CrackMatrixEngine.stripOwnBlock(String(message.text || '')) }));
+        const next = parseNanoFacts(result.text, end.index + 1, end.message.id, Math.min(16, count * 4), turns, analysis.domains, sourceMessages)
           .filter(fact => !excluded.has(normalizedKeyword(fact.keyword)));
         facts.push(...next);
       } catch (error) {

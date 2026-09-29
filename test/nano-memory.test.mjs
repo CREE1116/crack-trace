@@ -76,7 +76,7 @@ test('Nano reads completed assistant turns once and retrieves distinct microfact
   assert.ok(cards.some(card => /돌려주었다/.test(card.content)));
 });
 
-test('Nano facts preserve source turn and domain; recent turns stay out of injection', () => {
+test('Nano facts keep only valid source turns; recent turns stay out of injection', () => {
   const { context } = workerHarness();
   const parse = vm.runInContext('parseNanoFacts', context);
   const facts = parse(JSON.stringify([
@@ -85,8 +85,7 @@ test('Nano facts preserve source turn and domain; recent turns stay out of injec
   ]), 8, 'batch', 16, [3, 8], new Map([['거점', '장소']]));
   assert.equal(facts[0].turn, 3);
   assert.equal(facts[0].domain, '인물');
-  assert.equal(facts[1].turn, 8);
-  assert.equal(facts[1].domain, '장소');
+  assert.equal(facts.length, 1);
   const cutoff = vm.runInContext('recentMemoryCutoff', context)([
     { role: 'user' }, { role: 'assistant' }, { role: 'user' }, { role: 'assistant' },
     { role: 'user' }, { role: 'assistant' }, { role: 'user' }, { role: 'assistant' },
@@ -108,7 +107,7 @@ test('one assistant reply can retain several independently retrievable facts', a
   ]) });
   const messages = [
     { id: 'u1', role: 'user', text: '크리의 임무와 준영의 상태를 묻는다.' },
-    { id: 'a1', role: 'assistant', text: '크리가 하운드를 격파하고 S급으로 승진했다. 준영은 발목을 다쳐 걷기 어렵다.' }
+    { id: 'a1', role: 'assistant', text: '크리가 C구역 하운드를 격파해 특무 임무를 완수하고 S급으로 승진했다. 준영은 발목을 다쳐 걷기 어렵다.' }
   ];
   const result = await vm.runInContext('processNanoMemory', context)('room', messages, () => {}, { force: true });
   assert.equal(result.complete, true);
@@ -118,6 +117,28 @@ test('one assistant reply can retain several independently retrievable facts', a
   const cards = vm.runInContext('nanoMemoryCards', context)('room', facts, '크리 특무 임무');
   assert.ok(cards.some(card => card.title.includes('크리')));
   assert.ok(cards.some(card => card.title.includes('특무 임무')));
+});
+
+test('Nano source gate rejects misspelled names, invented turn numbers and analysis text', () => {
+  const { context } = workerHarness();
+  const parse = vm.runInContext('parseNanoFacts', context);
+  const source = [
+    { turn: 1, text: '크리가 준영을 도왔다.' },
+    { turn: 2, text: '하나가 준영에게 물을 건넸다.' },
+    { turn: 3, text: '준영은 물을 마시고 발목을 살폈다.' }
+  ];
+  const facts = parse(JSON.stringify([
+    { turn: 2, keyword: '하나', domain: '인물', fact: '하나가 준영에게 물을 건넸다.' },
+    { turn: 2, keyword: '하하나', domain: '인물', fact: '하나가 물을 건넸다.' },
+    { turn: 2, keyword: '존영', domain: '인물', fact: '준영이 물을 받았다.' },
+    { turn: 99, keyword: '준영', domain: '인물', fact: '준영이 물을 마셨다.' },
+    { turn: 3, keyword: '준영', domain: '인물', fact: '로컬 NLP/LSA 분석으로 상황을 파악했다.' },
+    { turn: 3, keyword: '준영', domain: '가짜', fact: '준영은 발목을 살폈다.' },
+    { turn: 3, keyword: '준영', domain: '가짜', fact: '준영은 발목을 살폈다.' }
+  ]), 3, 'batch', 16, [2, 3], new Map([['준영', '인물']]), source);
+  assert.equal(facts.length, 2);
+  assert.equal(facts[0].keyword, '하나');
+  assert.equal(facts[1].domain, '인물');
 });
 
 test('edited, disabled, deleted and excluded Nano facts affect retrieval without rewriting generated history', async () => {
