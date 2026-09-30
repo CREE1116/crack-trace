@@ -244,6 +244,7 @@
           </button>
         </div>
         <div class="cm-dock-actions">
+          <button type="button" class="cm-dock-action-btn secondary cm-dock-update" id="cm-dock-update" hidden title="새 버전 받기">⬆ 업데이트</button>
           <span id="cm-dock-counter" class="cm-dock-counter" hidden title="크랙 입력 한도 2,000자 중 내 입력과 붙는 기억의 글자수"></span>
           <button type="button" class="cm-dock-action-btn secondary" id="cm-dock-btn-preview" aria-expanded="false" aria-controls="cm-composer-preview" title="현재 입력과 직전 AI 응답을 반영한 전송 프롬프트 보기">👁️ 프롬프트</button>
           <button type="button" class="cm-dock-action-btn" id="cm-dock-btn-summarize" title="최근 대화 분석 및 기억 진화 요약">
@@ -272,6 +273,14 @@
       preview.insertAdjacentElement('afterend', createFindPanel());
       updateAnalysisProgress();
 
+      const updateButton = dock.querySelector('#cm-dock-update');
+      updateButton.onclick = () => chrome.runtime.sendMessage({ type: 'OPEN_UPDATER' }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'GET_UPDATE_INFO' }).then(info => {
+        if (!info?.success || !info.available) return;
+        updateButton.textContent = `⬆ ${info.latest}`;
+        updateButton.title = `새 버전 ${info.latest}이(가) 있어요. 눌러서 업데이트`;
+        updateButton.hidden = false;
+      }).catch(() => {});
       dock.querySelector('#cm-dock-memory').onclick = () => openMasterModal('deck');
       dock.querySelector('#cm-dock-usernote').onclick = () => openMasterModal('usernote');
       dock.querySelector('#cm-dock-lore').onclick = () => openMasterModal('lore');
@@ -2831,7 +2840,7 @@
     };
 
     // Backup: everything Trace stores except chat snapshots (re-fetched from Crack) and model scores.
-    const BACKUP_SKIP = /^(?:snap:|modelScores|modelNames|nanoMemoryDraft:)/;
+    const BACKUP_SKIP = /^(?:snap:|modelScores|modelNames|nanoMemoryDraft:|updateInfo$)/;
     modal.querySelector('#cm-btn-backup-export').onclick = async () => {
       const all = await chrome.storage.local.get(null);
       const data = Object.fromEntries(Object.entries(all).filter(([key]) => !BACKUP_SKIP.test(key)));

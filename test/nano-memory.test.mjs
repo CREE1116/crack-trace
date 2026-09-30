@@ -971,3 +971,12 @@ test('in LLM mode a pinned memory and a pinned keyword are injected even when th
   prepared = await dispatch({ type: 'GET_PREPARED_CONTEXT', chatId: 'room', outgoing: draft });
   assert.doesNotMatch(prepared.content, /세린은/);
 });
+
+test('a release is newer only when its version is higher, part by part', () => {
+  const { context } = workerHarness();
+  const newer = vm.runInContext('newerVersion', context);
+  assert.equal(newer('0.10.0', '0.9.0'), true, 'numbers, not text: 10 > 9');
+  assert.equal(newer('v0.10.1', '0.10.0'), true);
+  assert.equal(newer('0.10.0', '0.10.0'), false);
+  assert.equal(newer('0.9.9', '0.10.0'), false, 'a development build ahead of the release is left alone');
+});

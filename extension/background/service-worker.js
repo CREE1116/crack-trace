@@ -1244,6 +1244,39 @@ chrome.alarms.onAlarm.addListener(a => {
   if (a.name === 'updateScores') updateModelScores();
 });
 
+// --- Updates: the latest GitHub release, checked every few hours ---
+// The updater page (update/update.html) writes the new files into the extension folder the
+// user picked once, then reloads Trace.
+const UPDATE_REPO = 'CREE1116/crack-trace';
+const UPDATE_CHECK_MS = 6 * 60 * 60 * 1000;
+const versionParts = version => String(version || '').replace(/^v/, '').split('.').map(part => Number.parseInt(part, 10) || 0);
+function newerVersion(a, b) {
+  const [x, y] = [versionParts(a), versionParts(b)];
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  }
+  return false;
+}
+async function checkForUpdate(force = false) {
+  const current = chrome.runtime.getManifest().version;
+  const { updateInfo } = await chrome.storage.local.get('updateInfo');
+  if (!force && updateInfo?.current === current && Date.now() - (updateInfo.checkedAt || 0) < UPDATE_CHECK_MS) return updateInfo;
+  const res = await fetch(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`,
+    { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' });
+  if (!res.ok) throw new Error(`GitHub HTTP ${res.status}`);
+  const release = await res.json();
+  const latest = String(release.tag_name || '').replace(/^v/, '');
+  const info = { checkedAt: Date.now(), current, latest, tag: String(release.tag_name || ''),
+    available: newerVersion(latest, current), notes: String(release.body || '').slice(0, 4000), url: String(release.html_url || '') };
+  await chrome.storage.local.set({ updateInfo: info });
+  return info;
+}
+checkForUpdate().catch(() => {});
+chrome.alarms.create('updateCheck', { periodInMinutes: 360 });
+chrome.alarms.onAlarm.addListener(a => {
+  if (a.name === 'updateCheck') checkForUpdate(true).catch(() => {});
+});
+
 // --- Automated Sliding-Window Evolving Graph Trigger ---
 async function checkAndTriggerAutoSlidingGraph(chatId, messages, report = () => {}) {
   if (!chatId || !messages || messages.length < 4) return;
@@ -1565,6 +1598,16 @@ function prepareContext(msg, sendResponse) {
 
 // --- Communication Dispatcher ---
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'GET_UPDATE_INFO') {
+    checkForUpdate(Boolean(msg.force)).then(info => sendResponse({ success: true, ...info }))
+      .catch(error => sendResponse({ success: false, error: String(error.message || error) }));
+    return true;
+  }
+  if (msg.type === 'OPEN_UPDATER') {
+    chrome.tabs.create({ url: chrome.runtime.getURL('update/update.html') });
+    sendResponse({ success: true });
+    return;
+  }
   if (msg.type === 'OPEN_NANO_PANEL') {
     if (!sender.tab?.id) { sendResponse({ success: false, error: '현재 크랙 탭을 찾지 못했습니다.' }); return; }
     chrome.sidePanel.open({ tabId: sender.tab.id })
