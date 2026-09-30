@@ -180,6 +180,24 @@ body[data-cm-perf="true"] [data-message-group-id] {
 .cm-composer-preview-header { margin-bottom: 6px; }
 .cm-composer-preview-header span,
 .cm-composer-preview-footer span { color: var(--cm-text-3); }
+.cm-preview-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.cm-preview-tabs button {
+  padding: 5px 10px;
+  border: 1px solid var(--cm-line);
+  border-radius: var(--cm-r-control);
+  background: var(--cm-bg);
+  color: var(--cm-text-2);
+  cursor: pointer;
+}
+.cm-preview-tabs button[aria-selected="true"] { background: var(--cm-brand-soft); color: var(--cm-text); border-color: var(--cm-brand); }
+.cm-composer-preview [role="tabpanel"][hidden] { display: none; }
+.cm-preview-items { max-height: 240px; overflow-y: auto; }
+.cm-preview-item { padding: 8px 0; border-top: 1px solid var(--cm-line); }
+.cm-preview-item:first-child { border-top: 0; }
+.cm-preview-item-label { display: inline-flex; align-items: center; gap: 6px; color: var(--cm-text); font-weight: 600; cursor: pointer; }
+.cm-preview-item-reason { margin-left: 8px; color: var(--cm-text-3); }
+.cm-preview-item p { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cm-preview-source { padding: 0; border: 0; background: transparent; color: var(--cm-link); cursor: pointer; }
 .cm-composer-preview textarea {
   display: block;
   width: 100%;
@@ -1301,3 +1319,13 @@ body[data-cm-perf="true"] [data-message-group-id] {
   font-variant-numeric: tabular-nums;
 }
 .cm-memo-list li button:disabled { opacity: 0.3; cursor: default; }
+
+/* "sent without memory" notice under the dock */
+.cm-send-notice {
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--cm-line);
+  background: var(--cm-brand-soft);
+  color: var(--cm-text);
+  font-size: 11px;
+}
+.cm-send-notice[hidden] { display: none; }

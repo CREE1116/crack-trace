@@ -266,7 +266,7 @@
       preview.id = 'cm-composer-preview';
       preview.className = 'cm-composer-preview';
       preview.hidden = true;
-      preview.innerHTML = '<div class="cm-composer-preview-header"><strong>전송 프롬프트 미리보기</strong><span>현재 입력 · 직전 AI 응답 기준</span></div><textarea id="cm-composer-preview-text" readonly aria-label="실제 전송 프롬프트"></textarea><div id="cm-composer-preview-status" role="status"></div><div class="cm-composer-preview-footer"><span>유저노트는 별도로 전송됩니다.</span><button type="button" id="cm-composer-preview-copy">복사</button></div>';
+      preview.innerHTML = '<div class="cm-composer-preview-header"><strong>이번 전송</strong><span>현재 입력 · 직전 AI 응답 기준</span></div><div class="cm-preview-tabs" role="tablist" aria-label="전송 미리보기"><button type="button" id="cm-preview-selected-tab" role="tab" aria-controls="cm-preview-selected" aria-selected="true">선택 내역</button><button type="button" id="cm-preview-raw-tab" role="tab" aria-controls="cm-preview-raw" aria-selected="false">전송 원문</button></div><div id="cm-preview-selected" role="tabpanel" aria-labelledby="cm-preview-selected-tab"><div id="cm-preview-items" class="cm-preview-items"></div></div><div id="cm-preview-raw" role="tabpanel" aria-labelledby="cm-preview-raw-tab" hidden><textarea id="cm-composer-preview-text" readonly aria-label="실제 전송 프롬프트"></textarea><div class="cm-composer-preview-footer"><span>유저노트는 별도로 전송됩니다.</span><button type="button" id="cm-composer-preview-copy">복사</button></div></div><div id="cm-composer-preview-status" role="status"></div>';
       progress.insertAdjacentElement('afterend', preview);
       preview.insertAdjacentElement('afterend', createMemoPanel());
       preview.insertAdjacentElement('afterend', createFindPanel());
@@ -288,6 +288,15 @@
       preview.querySelector('#cm-composer-preview-copy').onclick = () => {
         navigator.clipboard.writeText(preview.querySelector('textarea').value);
       };
+      for (const [tabId, panelId] of [['cm-preview-selected-tab', 'cm-preview-selected'], ['cm-preview-raw-tab', 'cm-preview-raw']]) {
+        preview.querySelector(`#${tabId}`).onclick = () => {
+          for (const [otherTabId, otherPanelId] of [['cm-preview-selected-tab', 'cm-preview-selected'], ['cm-preview-raw-tab', 'cm-preview-raw']]) {
+            const active = otherTabId === tabId;
+            preview.querySelector(`#${otherTabId}`).setAttribute('aria-selected', String(active));
+            preview.querySelector(`#${otherPanelId}`).hidden = !active;
+          }
+        };
+      }
 
       refreshDockLabels();
     }
@@ -590,11 +599,95 @@
   }
 
   // --- 3. Typing & Pre-Staging for 0ms WebSocket Injection ---
+  let previewResult = null;
+  const excludedPreviewLines = new Set();
+  const previewKey = item => `${item.type || ''}\u0000${item.line || ''}`;
+
+  function selectedForSend(res, draft) {
+    if (!res?.success) return { selected: [], content: draft };
+    if (res.content === draft) return { selected: [], content: draft };
+    // The same draft even when Crack sends its line breaks or spaces differently.
+    const same = value => String(value || '').replace(/\s+/g, ' ').trim();
+    const excluded = same(stagedPrompt) === same(draft) ? excludedPreviewLines : new Set();
+    if (!excluded.size) return { selected: res.selected || [], content: res.content || draft };
+    const selected = (res.selected || []).filter(item => !excluded.has(previewKey(item)));
+    const content = CrackMatrixEngine.composeUser(draft, selected, 2000, res.currentTurn);
+    return content === draft ? { selected: [], content } : { selected, content };
+  }
+
+  function renderPreviewItems(res, draft) {
+    const list = document.getElementById('cm-preview-items');
+    if (!list) return;
+    list.replaceChildren();
+    const items = res?.success && res.content !== draft ? res.selected || [] : [];
+    if (!items.length) {
+      list.textContent = draft ? '이번 입력에 추가할 기억이나 로어가 없습니다.' : '입력창에 메시지를 쓰면 선택 내역이 표시됩니다.';
+      return;
+    }
+    for (const item of items) {
+      const row = document.createElement('div');
+      row.className = 'cm-preview-item';
+      const label = document.createElement('label');
+      label.className = 'cm-preview-item-label';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = !excludedPreviewLines.has(previewKey(item));
+      checkbox.setAttribute('aria-label', `${item.title || '기억'} 이번 전송에 포함`);
+      checkbox.onchange = () => {
+        if (checkbox.checked) excludedPreviewLines.delete(previewKey(item));
+        else excludedPreviewLines.add(previewKey(item));
+        if (previewResult && stagedPrompt === draft) renderPreparedPreview(previewResult, draft);
+      };
+      const heading = document.createElement('span');
+      heading.textContent = `${item.type === 'lore' ? '로어' : item.type === 'passage' ? '원문' : '기억'} · ${item.title || '과거 대화'}`;
+      label.append(checkbox, heading);
+      const reason = document.createElement('span');
+      reason.className = 'cm-preview-item-reason';
+      reason.textContent = item.why || '';
+      row.append(label, reason);
+      const body = document.createElement('p');
+      body.textContent = item.content || item.text || item.line || '';
+      row.append(body);
+      if (Number(item.turn) > 0) {
+        const source = document.createElement('button');
+        source.type = 'button';
+        source.className = 'cm-preview-source';
+        source.textContent = `대화 ${item.turn} 보기`;
+        source.onclick = () => jumpToTurn(item.turn);
+        row.append(source);
+      }
+      list.append(row);
+    }
+  }
+
+  function renderPreparedPreview(res, draft) {
+    const prepared = selectedForSend(res, draft);
+    updateCounter(draft.length, prepared.content.length);
+    updateStatusUI({ userNoteCount: res.userNote ? 1 : 0,
+      memoryCount: prepared.selected.filter(item => item.type === 'passage').length,
+      summaryCount: prepared.selected.filter(item => item.type !== 'passage' && item.type !== 'lore').length });
+    renderPreviewItems(res, draft);
+    const preview = document.getElementById('cm-composer-preview-text');
+    if (preview) preview.value = prepared.content;
+    const status = document.getElementById('cm-composer-preview-status');
+    if (status) status.textContent = prepared.selected.length
+      ? `주입 ${prepared.selected.length}건 · ${res.mode === 'nano' ? 'LLM 기억' : '원문 검색'}${res.semantic ? ' · 의미 검색' : ''}`
+      : `주입 없음 · ${excludedPreviewLines.size ? '이번 전송에서 제외됨' : res.reason || '관련 기억 없음'}`;
+    chrome.runtime.sendMessage({ type: 'LIVE_PROMPT_PREVIEW', target: 'sidepanel', chatId: chatId(),
+      draft, items: prepared.selected }).catch(() => {});
+    window.postMessage({ type: 'CRACK_MATRIX_STAGE_PAYLOAD', originalPrompt: draft, chatId: chatId(),
+      injectedContent: prepared.content, injectedCount: prepared.selected.length }, '*');
+  }
+
   function handleTyping(text) {
     const id = chatId();
     const cleanPrompt = text.trim();
     if (!id) return;
 
+    if (stagedPrompt !== cleanPrompt) {
+      excludedPreviewLines.clear();
+      previewResult = null;
+    }
     stagedPrompt = cleanPrompt;
     updateCounter(cleanPrompt.length, cleanPrompt.length);
     const preview = document.getElementById('cm-composer-preview-text');
@@ -602,6 +695,8 @@
     if (preview && !cleanPrompt) preview.value = '입력창에 메시지를 쓰면 전송할 프롬프트가 표시됩니다.';
     if (previewStatus && !cleanPrompt) previewStatus.textContent = '';
     if (!cleanPrompt) {
+      renderPreviewItems(null, '');
+      window.postMessage({ type: 'CRACK_MATRIX_CLEAR_STAGE' }, '*');
       chrome.runtime.sendMessage({ type: 'LIVE_PROMPT_PREVIEW', target: 'sidepanel', chatId: id,
         draft: '', items: [] }).catch(() => {});
       updateStatusUI({ userNoteCount: 0, memoryCount: 0, summaryCount: 0 });
@@ -610,27 +705,16 @@
     if (cleanPrompt) {
       chrome.runtime.sendMessage({ type: 'GET_PREPARED_CONTEXT', chatId: id, outgoing: cleanPrompt }, res => {
         if (stagedPrompt !== cleanPrompt || chatId() !== id) return;
-        if (res?.success) updateCounter(cleanPrompt.length, String(res.content || cleanPrompt).length);
         if (res?.success && !res.intentReady) scheduleIntent(id, cleanPrompt);
-        if (res?.success) updateStatusUI({
-          userNoteCount: res.userNote ? 1 : 0,
-          memoryCount: res.res?.selectedMemory?.length || 0,
-          summaryCount: res.res?.selectedSummaries?.length || 0
-        });
-        if (preview) preview.value = res?.success ? (res.content || cleanPrompt) : '프롬프트를 준비하지 못했습니다.';
-        if (previewStatus) previewStatus.textContent = res?.success
-          ? (res.selected?.length ? `주입 ${res.selected.length}건 · ${res.mode === 'nano' ? 'LLM 기억' : '원문 검색'}${res.semantic ? ' · 의미 검색' : ''}` : `주입 없음 · ${res.reason || '관련 기억 없음'}`)
-          : '프롬프트 준비 오류';
-        if (res && res.success && res.content) {
-          chrome.runtime.sendMessage({ type: 'LIVE_PROMPT_PREVIEW', target: 'sidepanel', chatId: id,
-            draft: cleanPrompt, items: res.selected || [] }).catch(() => {});
-          window.postMessage({
-            type: 'CRACK_MATRIX_STAGE_PAYLOAD',
-            originalPrompt: cleanPrompt,
-            chatId: id,
-            injectedContent: res.content,
-            injectedCount: res.selected?.length || 0
-          }, '*');
+        if (res?.success) {
+          previewResult = res;
+          renderPreparedPreview(res, cleanPrompt);
+        } else {
+          previewResult = null;
+          renderPreviewItems(null, cleanPrompt);
+          if (preview) preview.value = '프롬프트를 준비하지 못했습니다.';
+          if (previewStatus) previewStatus.textContent = '프롬프트 준비 오류';
+          window.postMessage({ type: 'CRACK_MATRIX_CLEAR_STAGE' }, '*');
         }
       });
     }
@@ -764,7 +848,40 @@
     if (e.data?.type === 'CRACK_MATRIX_INJECTED_SENT') {
       [10, 40, 120, 300, 800].forEach(delay => setTimeout(maskInjectedMessages, delay));
     }
+    // The message went out differently from what was prepared (sent right after typing, or
+    // Crack wrote it out differently): prepare that exact text now; the page waits briefly.
+    if (e.source === window && e.data?.type === 'CRACK_MATRIX_PREPARE_NOW') {
+      const { requestId, chatId: room, text } = e.data;
+      const reply = result => window.postMessage({ type: 'CRACK_MATRIX_PREPARED', requestId, ...result }, '*');
+      if (!room || room !== chatId()) { reply({ ok: false }); return; }
+      chrome.runtime.sendMessage({ type: 'GET_PREPARED_CONTEXT', chatId: room, outgoing: String(text || '') })
+        .then(res => {
+          if (!res?.success) { reply({ ok: false }); return; }
+          const prepared = selectedForSend(res, String(text || ''));
+          reply({ ok: true, content: prepared.content, injectedCount: prepared.selected.length });
+        })
+        .catch(() => reply({ ok: false }));
+    }
+    if (e.source === window && e.data?.type === 'CRACK_MATRIX_SENT_WITHOUT_MEMORY') showSendNotice();
   });
+
+  // Shown when a message had to go out before its memory was ready.
+  function showSendNotice() {
+    const dock = document.getElementById('cm-composer-dock');
+    if (!dock) return;
+    let notice = document.getElementById('cm-send-notice');
+    if (!notice) {
+      notice = document.createElement('div');
+      notice.id = 'cm-send-notice';
+      notice.className = 'cm-send-notice';
+      notice.setAttribute('role', 'status');
+      dock.insertAdjacentElement('afterend', notice);
+    }
+    notice.textContent = '이번 메시지는 기억 준비가 늦어 기억 없이 보냈어요.';
+    notice.hidden = false;
+    clearTimeout(showSendNotice.timer);
+    showSendNotice.timer = setTimeout(() => { notice.hidden = true; }, 6000);
+  }
 
   // --- Bubble tools: turn number + pin ---
   // Each chat bubble gets "#턴" and a 📌 button. The service worker maps a bubble
@@ -3057,6 +3174,7 @@
       chrome.runtime.sendMessage({ type: 'SYNC_CHAT', chatId: id, progressId }, () => {
         if (chatId() !== id) return;
         finishAnalysis('sync');
+        chrome.runtime.sendMessage({ type: 'PREWARM_CONTEXT', chatId: id }).catch(() => {});
       });
     } else if (!id && currentChatId) {
       currentChatId = '';

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Trace Lite
 // @namespace    local.crack.ubis-memory
-// @version      0.9.0
+// @version      0.10.0
 // @description  Deterministic local retrieval of old Crack messages. No AI API.
 // @homepageURL  https://github.com/CREE1116/crack-trace
 // @supportURL   https://github.com/CREE1116/crack-trace/issues

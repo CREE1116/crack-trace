@@ -8,8 +8,16 @@ const require = createRequire(import.meta.url);
 const engine = require('../extension/engine/engine.js');
 const code = readFileSync(new URL('../extension/background/service-worker.js', import.meta.url), 'utf8');
 
+// Like chrome.storage.local: every write, including a test's direct data.set, is announced.
+class Storage extends Map {
+  listeners = [];
+  set(key, value) { super.set(key, value); this.announce(key); return this; }
+  delete(key) { const had = super.delete(key); this.announce(key); return had; }
+  announce(key) { for (const listener of this.listeners || []) listener({ [key]: {} }, 'local'); }
+}
+
 function workerHarness() {
-  const data = new Map([['llmIntervention', true]]);
+  const data = new Storage([['llmIntervention', true]]);
   let prompts = 0;
   let messageListener;
   const storage = {
@@ -31,6 +39,7 @@ function workerHarness() {
     },
     getBytesInUse(_keys, callback) { callback(0); }
   };
+  const onChanged = { addListener(listener) { data.listeners.push(listener); } };
   const chrome = {
     sidePanel: { setPanelBehavior: () => Promise.resolve() },
     runtime: {
@@ -44,7 +53,7 @@ function workerHarness() {
           ? '엘레노어가 은빛 열쇠를 맡았다.' : '엘레노어가 은빛 열쇠를 돌려주었다.' }]) };
       }
     },
-    storage: { local: storage },
+    storage: { local: storage, onChanged },
     tabs: { query(_options, callback) { callback([]); } },
     alarms: { create() {}, onAlarm: { addListener() {} } }
   };

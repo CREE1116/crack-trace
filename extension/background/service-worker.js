@@ -1424,6 +1424,145 @@ function pinnedCards(pins, facts = [], pinnedKeywords = [], decisions = {}) {
   return chosen.sort((a, b) => turnOf(a) - turnOf(b));
 }
 
+// What the prompt reads on every pause in typing (memory, lore, settings), kept here and
+// dropped key by key when storage changes. A read that overlapped a change is not kept.
+const storageCache = new Map();
+let storageGeneration = 0;
+chrome.storage.onChanged?.addListener((changes, area) => {
+  if (area !== 'local') return;
+  storageGeneration++;
+  for (const key of Object.keys(changes)) storageCache.delete(key);
+});
+async function cachedStorageGet(keys) {
+  const missing = keys.filter(key => !storageCache.has(key));
+  if (missing.length) {
+    const generation = storageGeneration;
+    const fresh = await chrome.storage.local.get(missing);
+    if (generation !== storageGeneration) return chrome.storage.local.get(keys);
+    for (const key of missing) storageCache.set(key, fresh[key]);
+  }
+  return Object.fromEntries(keys.filter(key => storageCache.get(key) !== undefined).map(key => [key, storageCache.get(key)]));
+}
+
+// The prompt for a draft: memory, pins, lore and the user note, fitted to Crack's limit.
+// Called on every pause in typing, so it must not wait on the network.
+function prepareContext(msg, sendResponse) {
+  const { chatId, outgoing } = msg;
+  (async () => {
+  // Waiting for Crack's server here put a network round trip in front of every prepare; the
+  // chat already in memory is enough, and what the refresh finds is there for the next one.
+  if (activeMemory.has(chatId)) refreshRecent(chatId).catch(() => null);
+  else await refreshRecent(chatId).catch(() => null);
+  const mem = activeMemory.get(chatId);
+
+  const keys = [
+    `usernote:${chatId}`, 'usernote:global', 'usernote:auto_enabled', `usernoteEnabled:${chatId}`,
+    `lore:${chatId}`, 'lore:global',
+    `summary:${chatId}`,
+    `graph:${chatId}`,
+    `currentState:${chatId}`,
+    `auto:${chatId}`,
+    `situation:${chatId}`,
+    `nanoMemory:${chatId}`,
+    `nanoOverrides:${chatId}`,
+    `dropKw:${chatId}`,
+    `pins:${chatId}`,
+    `pinKw:${chatId}`,
+    'llmIntervention',
+    'llmIntent',
+    'semanticSearch',
+    `memoryMerge:${chatId}`
+  ];
+
+  await cachedStorageGet(keys).then(async data => {
+    const isAuto = data[`auto:${chatId}`] !== false;
+    if (!isAuto) {
+      sendResponse({ success: true, selected: [], content: outgoing, userNote: '', reason: '자동 주입이 꺼져 있습니다.' });
+      return;
+    }
+
+    const userNote = data[`usernoteEnabled:${chatId}`] === false ? ''
+      : data[`usernote:${chatId}`] || (data['usernote:auto_enabled'] !== false ? data['usernote:global'] : '') || '';
+
+    const roomLores = data[`lore:${chatId}`] || [];
+    const globalLores = data['lore:global'] || [];
+    const lores = [...globalLores, ...roomLores];
+    const useNano = data.llmIntervention !== false;
+    // Old rule-mode graph cards are superseded by keyword cards; hand-written cards stay.
+    const summaries = (data[`summary:${chatId}`] || []).filter(card => !card.isHypergraph && !card.isKeywordCard);
+    const budget = PROMPT_LIMIT;
+
+    // The model surely sees the message being answered and the reply before it; memory from
+    // those two, or restated in them, is skipped. Anything older is fair game: how much history
+    // Crack itself sends is unknown, and a gap is worse than a little overlap.
+    const all = mem?.all || [];
+    const cutoff = Math.max(1, all.length - 1);
+    const olderMessages = all.slice(0, cutoff - 1);
+    const recentText = all.slice(olderMessages.length).map(m => CrackMatrixEngine.stripOwnBlock(m.text || '')).join('\n');
+
+    // Use the latest assistant reply with the user's draft to retrieve relevant context.
+    const lastAssistant = all.filter(m => m.role === 'assistant' || m.role === 'model').slice(-1)[0];
+    const recentContext = CrackMatrixEngine.stripOwnBlock(lastAssistant?.text || '').slice(0, 600);
+    const combinedQuery = recentContext ? `${outgoing} ${recentContext}` : outgoing;
+    const nanoFacts = effectiveNanoFacts(data[`nanoMemory:${chatId}`]?.facts,
+      data[`nanoOverrides:${chatId}`] || {}, data[`dropKw:${chatId}`] || []);
+    // LLM on: keyword-card memory. LLM off: original passages found by search (below).
+    if (!useNano && mem && !mem.pix) mem.pix = CrackMatrixEngine.buildPassageIndex(all);
+    // Optional meaning search: the draft is embedded once and compared with vectors indexed
+    // in the background; if that takes too long the prompt goes out with word search alone.
+    const semantic = data.semanticSearch ? await Promise.all([
+      semanticScores(`lore:${chatId}`, outgoing, lores.map((lore, i) => ({ id: String(lore.id || lore.title || `#${i}`), text: `${lore.title || ''} ${(lore.keywords || []).join(' ')} ${lore.content || ''}` }))),
+      useNano
+        ? semanticScores(`facts:${chatId}`, outgoing, nanoFacts.map(fact => ({ id: fact.id, text: `${fact.keyword} ${fact.fact}` })))
+        : semanticScores(`passages:${chatId}`, outgoing, (mem?.pix?.units || []).map(unit => ({ id: unit.unitId, text: unit.text })))
+    ]) : [null, null];
+    // Pins are the user's explicit "remember this"; they go ahead of retrieved memory.
+    const pinned = pinnedCards(data[`pins:${chatId}`] || [], useNano ? nanoFacts : [],
+      useNano ? data[`pinKw:${chatId}`] || [] : [], data[`memoryMerge:${chatId}`] || {});
+    const pinnedIds = new Set(pinned.map(card => card.id));
+    if (useNano) summaries.unshift(...nanoMemoryCards(chatId, nanoFacts, outgoing, cutoff, recentContext, recentText,
+      data[`memoryMerge:${chatId}`] || {}, conversationTopics(nanoFacts, outgoing, all, intentCache.get(`${chatId}\u0000${outgoing.trim()}`)), semantic[1])
+      .filter(card => !pinnedIds.has(card.id)));
+    summaries.unshift(...pinned);
+
+    const res = CrackMatrixEngine.contextWithAll(null, olderMessages, outgoing, {
+      userNote,
+      loreList: lores,
+      summaryCards: summaries,
+      budget,
+      contextQuery: combinedQuery,
+      loreFacts: nanoFacts,
+      loreSemantic: semantic[0],
+      passageSemantic: useNano ? null : semantic[1],
+      loreRecentContext: recentContext,
+      currentTurn: all.length + 1,
+      passageIndex: useNano ? null : mem?.pix,
+      passageQuery: outgoing,
+      passageContext: recentContext,
+      maxTurn: cutoff,
+      injectUserNoteToPrompt: false // Keep user prompt clean; user note goes to native userNote
+    });
+
+    // The message being sent will be turn all.length + 1.
+    const content = CrackMatrixEngine.composeUser(outgoing, res.selected, budget, all.length + 1);
+    sendResponse({
+      success: true,
+      selected: res.selected,
+      content,
+      currentTurn: all.length + 1,
+      userNote: res.userNote || userNote,
+      reason: res.selected.length ? '' : (nanoFacts.length ? '관련 기억을 찾지 못했습니다.' : '기억을 쌓는 중입니다.'),
+      intentReady: !useNano || !nanoFacts.length || data.llmIntent === false || !needsIntent(outgoing, nanoFacts)
+        || intentCache.has(`${chatId}\u0000${outgoing.trim()}`),
+      mode: useNano ? 'nano' : 'local',
+      semantic: Boolean(data.semanticSearch) && Boolean(semantic[0] || semantic[1]),
+      res
+    });
+
+  });
+  })().catch(error => sendResponse({ success: false, error: error.message }));
+}
+
 // --- Communication Dispatcher ---
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'OPEN_NANO_PANEL') {
@@ -1698,117 +1837,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'GET_PREPARED_CONTEXT') {
-    const { chatId, outgoing } = msg;
-    (async () => {
-    await refreshRecent(chatId).catch(() => null);
-    const mem = activeMemory.get(chatId);
-
-    const keys = [
-      `usernote:${chatId}`, 'usernote:global', 'usernote:auto_enabled', `usernoteEnabled:${chatId}`,
-      `lore:${chatId}`, 'lore:global',
-      `summary:${chatId}`,
-      `graph:${chatId}`,
-      `currentState:${chatId}`,
-      `auto:${chatId}`,
-      `situation:${chatId}`,
-      `nanoMemory:${chatId}`,
-      `nanoOverrides:${chatId}`,
-      `dropKw:${chatId}`,
-      `pins:${chatId}`,
-      `pinKw:${chatId}`,
-      'llmIntervention',
-      'llmIntent',
-      'semanticSearch',
-      `memoryMerge:${chatId}`
-    ];
-
-    chrome.storage.local.get(keys, async data => {
-      const isAuto = data[`auto:${chatId}`] !== false;
-      if (!isAuto) {
-        sendResponse({ success: true, selected: [], content: outgoing, userNote: '', reason: '자동 주입이 꺼져 있습니다.' });
-        return;
-      }
-
-      const userNote = data[`usernoteEnabled:${chatId}`] === false ? ''
-        : data[`usernote:${chatId}`] || (data['usernote:auto_enabled'] !== false ? data['usernote:global'] : '') || '';
-
-      const roomLores = data[`lore:${chatId}`] || [];
-      const globalLores = data['lore:global'] || [];
-      const lores = [...globalLores, ...roomLores];
-      const useNano = data.llmIntervention !== false;
-      // Old rule-mode graph cards are superseded by keyword cards; hand-written cards stay.
-      const summaries = (data[`summary:${chatId}`] || []).filter(card => !card.isHypergraph && !card.isKeywordCard);
-      const budget = PROMPT_LIMIT;
-
-      // The model surely sees the message being answered and the reply before it; memory from
-      // those two, or restated in them, is skipped. Anything older is fair game: how much history
-      // Crack itself sends is unknown, and a gap is worse than a little overlap.
-      const all = mem?.all || [];
-      const cutoff = Math.max(1, all.length - 1);
-      const olderMessages = all.slice(0, cutoff - 1);
-      const recentText = all.slice(olderMessages.length).map(m => CrackMatrixEngine.stripOwnBlock(m.text || '')).join('\n');
-
-      // Use the latest assistant reply with the user's draft to retrieve relevant context.
-      const lastAssistant = all.filter(m => m.role === 'assistant' || m.role === 'model').slice(-1)[0];
-      const recentContext = CrackMatrixEngine.stripOwnBlock(lastAssistant?.text || '').slice(0, 600);
-      const combinedQuery = recentContext ? `${outgoing} ${recentContext}` : outgoing;
-      const nanoFacts = effectiveNanoFacts(data[`nanoMemory:${chatId}`]?.facts,
-        data[`nanoOverrides:${chatId}`] || {}, data[`dropKw:${chatId}`] || []);
-      // LLM on: keyword-card memory. LLM off: original passages found by search (below).
-      if (!useNano && mem && !mem.pix) mem.pix = CrackMatrixEngine.buildPassageIndex(all);
-      // Optional meaning search: the draft is embedded once and compared with vectors indexed
-      // in the background; if that takes too long the prompt goes out with word search alone.
-      const semantic = data.semanticSearch ? await Promise.all([
-        semanticScores(`lore:${chatId}`, outgoing, lores.map((lore, i) => ({ id: String(lore.id || lore.title || `#${i}`), text: `${lore.title || ''} ${(lore.keywords || []).join(' ')} ${lore.content || ''}` }))),
-        useNano
-          ? semanticScores(`facts:${chatId}`, outgoing, nanoFacts.map(fact => ({ id: fact.id, text: `${fact.keyword} ${fact.fact}` })))
-          : semanticScores(`passages:${chatId}`, outgoing, (mem?.pix?.units || []).map(unit => ({ id: unit.unitId, text: unit.text })))
-      ]) : [null, null];
-      // Pins are the user's explicit "remember this"; they go ahead of retrieved memory.
-      const pinned = pinnedCards(data[`pins:${chatId}`] || [], useNano ? nanoFacts : [],
-        useNano ? data[`pinKw:${chatId}`] || [] : [], data[`memoryMerge:${chatId}`] || {});
-      const pinnedIds = new Set(pinned.map(card => card.id));
-      if (useNano) summaries.unshift(...nanoMemoryCards(chatId, nanoFacts, outgoing, cutoff, recentContext, recentText,
-        data[`memoryMerge:${chatId}`] || {}, conversationTopics(nanoFacts, outgoing, all, intentCache.get(`${chatId}\u0000${outgoing.trim()}`)), semantic[1])
-        .filter(card => !pinnedIds.has(card.id)));
-      summaries.unshift(...pinned);
-
-      const res = CrackMatrixEngine.contextWithAll(null, olderMessages, outgoing, {
-        userNote,
-        loreList: lores,
-        summaryCards: summaries,
-        budget,
-        contextQuery: combinedQuery,
-        loreFacts: nanoFacts,
-        loreSemantic: semantic[0],
-        passageSemantic: useNano ? null : semantic[1],
-        loreRecentContext: recentContext,
-        currentTurn: all.length + 1,
-        passageIndex: useNano ? null : mem?.pix,
-        passageQuery: outgoing,
-        passageContext: recentContext,
-        maxTurn: cutoff,
-        injectUserNoteToPrompt: false // Keep user prompt clean; user note goes to native userNote
-      });
-
-      // The message being sent will be turn all.length + 1.
-      const content = CrackMatrixEngine.composeUser(outgoing, res.selected, budget, all.length + 1);
-      sendResponse({
-        success: true,
-        selected: res.selected,
-        content,
-        userNote: res.userNote || userNote,
-        reason: res.selected.length ? '' : (nanoFacts.length ? '관련 기억을 찾지 못했습니다.' : '기억을 쌓는 중입니다.'),
-        intentReady: !useNano || !nanoFacts.length || data.llmIntent === false || !needsIntent(outgoing, nanoFacts)
-          || intentCache.has(`${chatId}\u0000${outgoing.trim()}`),
-        mode: useNano ? 'nano' : 'local',
-        semantic: Boolean(data.semanticSearch) && Boolean(semantic[0] || semantic[1]),
-        res
-      });
-
-    });
-    })().catch(error => sendResponse({ success: false, error: error.message }));
+    prepareContext(msg, sendResponse);
     return true;
+  }
+  // Opening a chat builds the search indexes and caches now, so the first keystroke is fast.
+  if (msg.type === 'PREWARM_CONTEXT') {
+    if (msg.chatId) prepareContext({ chatId: String(msg.chatId), outgoing: '.' }, () => {});
+    sendResponse({ success: true });
+    return;
   }
 
   // --- Rebuild Evolution Graph on demand (Sliding 4-msg window over full history) ---
