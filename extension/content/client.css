@@ -1329,3 +1329,6 @@ body[data-cm-perf="true"] [data-message-group-id] {
   font-size: 11px;
 }
 .cm-send-notice[hidden] { display: none; }
+
+.cm-lore-advanced summary { cursor: pointer; color: var(--cm-text-3); font-size: 11px; }
+.cm-lore-advanced[open] summary { margin-bottom: 4px; }

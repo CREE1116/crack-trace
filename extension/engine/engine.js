@@ -385,9 +385,41 @@ const CrackMatrixEngine = (() => {
     loreVectorCache = { signature, ix };
     return loreVectorCache;
   }
-  function loreRelations(items, facts, turn) {
+  // Relations read from the lore text itself, so nobody has to write "주체 > 관계 > 대상":
+  // a sentence that names another lore (or someone memory knows) and a verb ("쓰는", "맡긴",
+  // "숨긴"…) relates the two. Which way it points is unknown, so both ways are kept.
+  function textRelations(items, names = []) {
+    const known = new Map();
+    for (const item of items) {
+      for (const name of [item.title, ...(Array.isArray(item.keywords) ? item.keywords : [])]) {
+        const alias = loreNorm(name);
+        if (alias.length >= 2 && !known.has(alias)) known.set(alias, String(item.title || '').trim());
+      }
+    }
+    for (const name of names) {
+      const alias = loreNorm(name);
+      if (alias.length >= 2 && !known.has(alias)) known.set(alias, String(name).trim());
+    }
+    const triples = items.map(() => []);
+    items.forEach((item, i) => {
+      const own = loreNorm(item.title);
+      for (const sentence of String(item.content || '').split(/(?<=[.!?。…])\s+|\n+/)) {
+        // Without a known verb, being named in the same sentence still ties the two together
+        // ("mention" never answers a question like "who wields it", it only brings them close).
+        const found = loreVerbs(sentence);
+        const verbs = found.size ? found : new Set(['mention']);
+        const text = loreNorm(sentence);
+        const others = new Set([...known].filter(([alias, name]) => text.includes(alias) && loreNorm(name) !== own).map(([, name]) => name));
+        for (const other of others) for (const verb of verbs) {
+          triples[i].push([other, verb, item.title], [item.title, verb, other]);
+        }
+      }
+    });
+    return triples;
+  }
+  function loreRelations(items, facts, turn, derived = textRelations(items)) {
     const edges = [];
-    for (const item of items) for (const triple of item.relations || []) {
+    for (const [i, item] of items.entries()) for (const triple of [...(item.relations || []), ...(derived[i] || [])]) {
       if (!Array.isArray(triple) || triple.length !== 3) continue;
       const [subject, rawPredicate, object] = triple.map(value => String(value || '').trim());
       const predicate = loreVerbs(rawPredicate).values().next().value || rawPredicate;
@@ -425,17 +457,18 @@ const CrackMatrixEngine = (() => {
   }
   function loreGraph(items, facts, turn) {
     const signature = JSON.stringify([
-      items.map(item => [item.id, item.title, item.keywords, item.relations]),
+      items.map(item => [item.id, item.title, item.keywords, item.relations, item.content]),
       (facts || []).map(fact => [fact.id, fact.keyword, fact.fact, fact.turn]), turn
     ]);
     if (loreGraphCache?.signature === signature) return loreGraphCache;
-    const edges = loreRelations(items, facts, turn);
+    const derived = textRelations(items, (facts || []).map(fact => fact.keyword));
+    const edges = loreRelations(items, facts, turn, derived);
     const entities = [...new Set([...items.map(item => item.title), ...edges.flatMap(edge => [edge.subject, edge.object])])]
       .filter(name => String(name).length >= 2);
-    const vectors = items.map(item => {
+    const vectors = items.map((item, i) => {
       const doc = new Map();
       loreAdd(doc, `e:${loreNorm(item.title)}`, 2);
-      for (const triple of item.relations || []) {
+      for (const triple of [...(item.relations || []), ...derived[i]]) {
         if (!Array.isArray(triple) || triple.length !== 3) continue;
         const [subject, rawPredicate, object] = triple;
         const predicate = loreVerbs(rawPredicate).values().next().value || rawPredicate;

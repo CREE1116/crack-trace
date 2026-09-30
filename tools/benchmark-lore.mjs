@@ -159,6 +159,13 @@ engines.live_selectLore = item => engine.selectLore(lores, queryFor(item), {
   facts: memoryFacts, turn: item.turn, budget: 600
 }).map((lore, index) => ({ id: lore.id, score: 1 - index * 0.001 }));
 
+// The same, with every hand-written relation removed: what text-derived relations recover.
+const withoutRelations = lores.map(({ relations, ...lore }) => lore);
+engines.live_selectLore_no_relations = item => engine.selectLore(withoutRelations, queryFor(item), {
+  userQuery: item.query, recentContext: item.recent || '',
+  facts: memoryFacts, turn: item.turn, budget: 600
+}).map((lore, index) => ({ id: lore.id, score: 1 - index * 0.001 }));
+
 const densePath = process.argv[2];
 if (densePath) {
   const dense = JSON.parse(readFileSync(densePath, 'utf8'));

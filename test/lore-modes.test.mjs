@@ -69,3 +69,15 @@ test('selected lore reaches the outgoing context within budget', () => {
   assert.equal(res.selectedLore[0]?.id, 'moonblade');
   assert.ok(engine.composeUser(query, res.selected, 2000).includes('설정·월광검'));
 });
+
+test('relations are read from the lore text when none are written', () => {
+  const lores = [
+    { id: 'moonblade', title: '월광검', content: '달빛을 모아 환영을 베는 검. 성소 기사 아린의 무기다.' },
+    { id: 'arin', title: '아린', content: '성소의 기사. 늘 웃는다.' },
+    { id: 'sunlance', title: '태양창', content: '햇빛을 모아 갑옷을 관통하는 창. 도윤이 사용한다.' },
+    { id: 'doyun', title: '도윤', content: '북문 수비대장.' }
+  ];
+  const ask = query => ids(engine.selectLore(lores, query, { userQuery: query, turn: 10 }));
+  assert.equal(ask('아린이 쓰는 무기는?')[0], 'moonblade');
+  assert.equal(ask('도윤이 쓰는 무기는?')[0], 'sunlance');
+});

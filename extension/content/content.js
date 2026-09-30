@@ -1616,7 +1616,11 @@
                 </div>
                 <input id="cm-lore-kw" class="cm-input" placeholder="트리거 키워드 (쉼표 구분: 성검, 아르테미스, 신성무기)">
                 <textarea id="cm-lore-content" class="cm-textarea" placeholder="주입할 설정 및 행동 지침 내용"></textarea>
-                <textarea id="cm-lore-relations" class="cm-textarea" placeholder="관계 (선택, 한 줄에 주체 > 관계 > 대상)&#10;예: 서령 > 맡김 > 은빛 열쇠" style="min-height: 70px"></textarea>
+                <details class="cm-lore-advanced">
+                  <summary>고급: 관계 직접 적기 (보통은 필요 없음)</summary>
+                  <p style="font-size: 11px;color: var(--cm-text-3);margin: 4px 0">본문에 같이 나온 이름과 동사("아린이 쓰는 검")에서 관계를 자동으로 읽습니다. 본문에 없는 관계만 한 줄에 하나씩 적으세요.</p>
+                  <textarea id="cm-lore-relations" class="cm-textarea" placeholder="주체 > 관계 > 대상&#10;예: 서령 > 맡김 > 은빛 열쇠" style="min-height: 70px"></textarea>
+                </details>
                 <div style="display: flex;justify-content: flex-end">
                   <button id="cm-btn-add-lore" class="cm-btn-primary small" type="button">로어 등록</button>
                 </div>
