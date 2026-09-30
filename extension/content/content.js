@@ -343,11 +343,8 @@
   // fable) the vendor-less form is an alias too. A bare version ("2.5-pro")
   // is too generic to stand alone, so ids like gemini-2.5-pro get no alias.
   function aliasesFor(id) {
-    // Release-stage tags and snapshot dates name the same model ("gemini-3.1-pro-preview" is
-    // Gemini 3.1 Pro, "claude-sonnet-4-5-20250929" is Sonnet 4.5).
-    const plain = String(id).replace(/[-_@](?:\d{8}|\d{4}-\d{2}-\d{2})$/, '').replace(/-(?:preview|latest)$/i, '')
-      .replace(/[-_@](?:\d{8}|\d{4}-\d{2}-\d{2})$/, '');
-    const bases = [String(id), plain];
+    // Release-stage tags name the same model ("gemini-3.1-pro-preview" is Gemini 3.1 Pro).
+    const bases = [String(id), String(id).replace(/-(?:preview|latest)$/i, '')];
     const out = [];
     for (const base of new Set(bases)) {
       const parts = base.split('-');
@@ -499,7 +496,7 @@
     if (texts.length < 2) return;
     reportedDialogs.add(root);
     const matched = texts.filter(t => modelForText(t));
-    console.info('[CrackMatrix] Radiosonde | 측정 모델', Object.keys(modelScores).length + '개', Object.keys(modelScores),
+    console.info('[CrackMatrix] Radiosonde | 측정 모델', Object.keys(modelScores).length + '개',
       '| 이 창에서 매칭', matched.length ? matched : '없음', '| 창의 글자', texts.slice(0, 30));
   }
 
