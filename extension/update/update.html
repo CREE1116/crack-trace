@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trace 업데이트</title>
+  <link rel="stylesheet" href="../sidepanel/sidepanel.css">
+  <style>
+    body { max-width: 560px; margin: 32px auto; padding: 0 16px; background: var(--cm-bg); color: var(--cm-text); line-height: 1.6; }
+    h1 { display: flex; align-items: center; gap: 10px; font-size: 20px; }
+    .versions { color: var(--cm-text-2); }
+    .notes { white-space: pre-wrap; padding: 12px; border: 1px solid var(--cm-line); border-radius: 8px; background: var(--cm-bg-2); font-size: 13px; max-height: 280px; overflow: auto; }
+    .steps { color: var(--cm-text-2); font-size: 13px; padding-left: 18px; }
+    button { padding: 8px 16px; border: 0; border-radius: 6px; background: var(--cm-brand, #FF4432); color: #fff; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    button.secondary { background: transparent; color: var(--cm-text-2); border: 1px solid var(--cm-line); }
+    progress { width: 100%; }
+    #status { min-height: 1.6em; }
+    #status.error { color: #D92D20; }
+  </style>
+</head>
+<body>
+  <h1><img src="../icons/trace.svg" width="32" height="32" alt="">Trace 업데이트</h1>
+  <p class="versions" id="versions">확인 중…</p>
+  <div class="notes" id="notes" hidden></div>
+  <ol class="steps">
+    <li>처음 한 번은 Trace를 설치한 <b>extension 폴더</b>(manifest.json이 들어 있는 폴더)를 고르고, 파일 수정을 허용해 주세요.</li>
+    <li>새 파일을 모두 받은 뒤에 한꺼번에 덮어씁니다. 받기에 실패하면 아무 파일도 바꾸지 않습니다.</li>
+    <li>끝나면 Trace가 스스로 다시 켜집니다. 열려 있는 크랙 탭은 새로고침하세요. 기억과 설정은 그대로 남습니다.</li>
+  </ol>
+  <p>
+    <button type="button" id="update" disabled>업데이트</button>
+    <button type="button" id="pick" class="secondary">폴더 다시 고르기</button>
+  </p>
+  <progress id="progress" value="0" max="1" hidden></progress>
+  <p id="status" role="status"></p>
+  <script type="module" src="update.js"></script>
+</body>
+</html>

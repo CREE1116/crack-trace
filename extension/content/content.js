@@ -244,6 +244,7 @@
           </button>
         </div>
         <div class="cm-dock-actions">
+          <button type="button" class="cm-dock-action-btn secondary cm-dock-update" id="cm-dock-update" hidden title="새 버전 받기">⬆ 업데이트</button>
           <span id="cm-dock-counter" class="cm-dock-counter" hidden title="크랙 입력 한도 2,000자 중 내 입력과 붙는 기억의 글자수"></span>
           <button type="button" class="cm-dock-action-btn secondary" id="cm-dock-btn-preview" aria-expanded="false" aria-controls="cm-composer-preview" title="현재 입력과 직전 AI 응답을 반영한 전송 프롬프트 보기">👁️ 프롬프트</button>
           <button type="button" class="cm-dock-action-btn" id="cm-dock-btn-summarize" title="최근 대화 분석 및 기억 진화 요약">
@@ -272,6 +273,14 @@
       preview.insertAdjacentElement('afterend', createFindPanel());
       updateAnalysisProgress();
 
+      const updateButton = dock.querySelector('#cm-dock-update');
+      updateButton.onclick = () => chrome.runtime.sendMessage({ type: 'OPEN_UPDATER' }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'GET_UPDATE_INFO' }).then(info => {
+        if (!info?.success || !info.available) return;
+        updateButton.textContent = `⬆ ${info.latest}`;
+        updateButton.title = `새 버전 ${info.latest}이(가) 있어요. 눌러서 업데이트`;
+        updateButton.hidden = false;
+      }).catch(() => {});
       dock.querySelector('#cm-dock-memory').onclick = () => openMasterModal('deck');
       dock.querySelector('#cm-dock-usernote').onclick = () => openMasterModal('usernote');
       dock.querySelector('#cm-dock-lore').onclick = () => openMasterModal('lore');
@@ -334,8 +343,11 @@
   // fable) the vendor-less form is an alias too. A bare version ("2.5-pro")
   // is too generic to stand alone, so ids like gemini-2.5-pro get no alias.
   function aliasesFor(id) {
-    // Release-stage tags name the same model ("gemini-3.1-pro-preview" is Gemini 3.1 Pro).
-    const bases = [String(id), String(id).replace(/-(?:preview|latest)$/i, '')];
+    // Release-stage tags and snapshot dates name the same model ("gemini-3.1-pro-preview" is
+    // Gemini 3.1 Pro, "claude-sonnet-4-5-20250929" is Sonnet 4.5).
+    const plain = String(id).replace(/[-_@](?:\d{8}|\d{4}-\d{2}-\d{2})$/, '').replace(/-(?:preview|latest)$/i, '')
+      .replace(/[-_@](?:\d{8}|\d{4}-\d{2}-\d{2})$/, '');
+    const bases = [String(id), plain];
     const out = [];
     for (const base of new Set(bases)) {
       const parts = base.split('-');
@@ -487,7 +499,7 @@
     if (texts.length < 2) return;
     reportedDialogs.add(root);
     const matched = texts.filter(t => modelForText(t));
-    console.info('[CrackMatrix] Radiosonde | 측정 모델', Object.keys(modelScores).length + '개',
+    console.info('[CrackMatrix] Radiosonde | 측정 모델', Object.keys(modelScores).length + '개', Object.keys(modelScores),
       '| 이 창에서 매칭', matched.length ? matched : '없음', '| 창의 글자', texts.slice(0, 30));
   }
 
@@ -2835,7 +2847,7 @@
     };
 
     // Backup: everything Trace stores except chat snapshots (re-fetched from Crack) and model scores.
-    const BACKUP_SKIP = /^(?:snap:|modelScores|modelNames|nanoMemoryDraft:)/;
+    const BACKUP_SKIP = /^(?:snap:|modelScores|modelNames|nanoMemoryDraft:|updateInfo$)/;
     modal.querySelector('#cm-btn-backup-export').onclick = async () => {
       const all = await chrome.storage.local.get(null);
       const data = Object.fromEntries(Object.entries(all).filter(([key]) => !BACKUP_SKIP.test(key)));

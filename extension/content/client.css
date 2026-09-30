@@ -1332,3 +1332,6 @@ body[data-cm-perf="true"] [data-message-group-id] {
 
 .cm-lore-advanced summary { cursor: pointer; color: var(--cm-text-3); font-size: 11px; }
 .cm-lore-advanced[open] summary { margin-bottom: 4px; }
+
+.cm-dock-update { color: var(--cm-brand) !important; font-weight: 600; }
+.cm-dock-update[hidden] { display: none; }

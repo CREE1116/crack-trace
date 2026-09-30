@@ -38,3 +38,11 @@ test('never guesses for Crack-only model names', () => {
   assert.equal(idOf('프로챗 1.0'), null);
   assert.equal(idOf('하이퍼챗 3.0'), null);
 });
+
+test('snapshot dates and release tags on an id still name the same model', () => {
+  setModelScores(Object.fromEntries(['claude-sonnet-4-5-20250929', 'claude-sonnet-4.6-latest', 'claude-opus-5'].map(id => [id, { id }])));
+  assert.equal(idOf('Sonnet-4.5를 활용한 생동감 넘치고 재미있는 스토리'), 'claude-sonnet-4-5-20250929');
+  assert.equal(idOf('Sonnet-4.6을 활용한 다채로운 인물 묘사'), 'claude-sonnet-4.6-latest');
+  assert.equal(idOf('Sonnet-4를 활용한'), null, 'the date is not a version');
+  setModelScores(Object.fromEntries(ids.map(id => [id, { id }])));
+});

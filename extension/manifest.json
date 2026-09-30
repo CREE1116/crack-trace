@@ -20,7 +20,9 @@
     "https://igx-radiosonde-api-striker.b-cdn.net/*",
     "https://huggingface.co/*",
     "https://*.hf.co/*",
-    "https://cdn.jsdelivr.net/*"
+    "https://cdn.jsdelivr.net/*",
+    "https://api.github.com/*",
+    "https://raw.githubusercontent.com/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
