@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Trace — 크랙 기억 도우미",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "크랙 대화에서 관련 기억과 로어북을 찾아 입력에 붙이고, 모델 측정 정보를 보여줍니다.",
   "permissions": [
     "storage",
