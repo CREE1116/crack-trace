@@ -254,6 +254,8 @@
     renderLiveCards();
   }
 
+  const extensionPresent = () => page.__TRACE_SEND_HOOK__ === 'extension';
+
   // --- WebSocket Hook for Auto-Injection ---
   const nativeSend = page.WebSocket.prototype.send;
   page.WebSocket.prototype.send = function (raw) {
@@ -268,6 +270,8 @@
 
     const socket = this;
     const outgoing = String(frame.payload.message ?? frame.payload.content ?? frame.payload.text ?? '');
+    // The Trace extension is installed too: it injects, Trace Lite stays out of the way.
+    if (extensionPresent() || outgoing.includes(E.USER_START)) return nativeSend.call(this, raw);
     const mem = active.get(id);
     const lores = getLores(id);
     // Reuse the passage index after the first preview or send in this room.
@@ -656,6 +660,11 @@
     }
 
     btn.classList.remove('syncing');
+    if (extensionPresent()) {
+      btn.classList.add('disabled');
+      txt.textContent = 'Trace 확장이 대신 주입 중';
+      return;
+    }
     if (!isEnabled(id)) {
       btn.classList.add('disabled');
       txt.textContent = '자동 기억 꺼짐';

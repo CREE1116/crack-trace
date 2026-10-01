@@ -48,6 +48,7 @@ function workerHarness() {
       sendMessage: async message => {
         // Count memory extraction prompts only; merge judgments are a separate, optional call.
         if (message?.type === 'LLM_PROMPT' && /^각 번호마다/.test(message.prompt)) return { success: true, text: '[]' };
+        if (message?.type === 'LLM_PROMPT' && /^아래 \[기억\]/.test(message.prompt)) return { success: true, text: '' };
         prompts++;
         return { success: true, text: JSON.stringify([{ keyword: '엘레노어', fact: prompts === 1
           ? '엘레노어가 은빛 열쇠를 맡았다.' : '엘레노어가 은빛 열쇠를 돌려주었다.' }]) };
@@ -91,11 +92,11 @@ test('Nano facts keep only valid source turns; recent turns stay out of injectio
   const { context } = workerHarness();
   const parse = vm.runInContext('parseNanoFacts', context);
   const source = [
-    { turn: 3, text: '서린은 크리와 내일 작전을 논의하자고 했다.' },
-    { turn: 8, text: '크리는 창고로 향했다.' }
+    { turn: 3, text: '서린은 루카와 내일 작전을 논의하자고 했다.' },
+    { turn: 8, text: '루카는 창고로 향했다.' }
   ];
   const facts = parse(JSON.stringify([
-    { turn: 8, keyword: '서린', domain: '인물', fact: '서린은 크리와 내일 작전을 논의하기로 했다.' },
+    { turn: 8, keyword: '서린', domain: '인물', fact: '서린은 루카와 내일 작전을 논의하기로 했다.' },
     { turn: 999, keyword: '거점', domain: '가짜', fact: '거점으로 돌아왔다.' }
   ]), 8, 'batch', 16, [3, 8], new Map([['거점', '장소']]), source);
   assert.equal(facts[0].turn, 3);
@@ -116,21 +117,21 @@ test('one assistant reply can retain several independently retrievable facts', a
   const { data, context } = workerHarness();
   data.set('memoryMaxTurns', 1);
   context.chrome.runtime.sendMessage = async () => ({ success: true, text: JSON.stringify([
-    { turn: 2, keyword: '크리', domain: '인물', fact: '크리가 S급으로 승진했다.' },
-    { turn: 2, keyword: '특무 임무', domain: '사건/약조', fact: '크리가 C구역에서 하운드를 격파해 특무 임무를 완수했다.' },
+    { turn: 2, keyword: '루카', domain: '인물', fact: '루카가 S급으로 승진했다.' },
+    { turn: 2, keyword: '특무 임무', domain: '사건/약조', fact: '루카가 C구역에서 하운드를 격파해 특무 임무를 완수했다.' },
     { turn: 2, keyword: '준영', domain: '인물', fact: '준영은 발목 부상으로 이동이 어렵다.' }
   ]) });
   const messages = [
-    { id: 'u1', role: 'user', text: '크리의 임무와 준영의 상태를 묻는다.' },
-    { id: 'a1', role: 'assistant', text: '크리가 C구역 하운드를 격파해 특무 임무를 완수하고 S급으로 승진했다. 준영은 발목을 다쳐 걷기 어렵다.' }
+    { id: 'u1', role: 'user', text: '루카의 임무와 준영의 상태를 묻는다.' },
+    { id: 'a1', role: 'assistant', text: '루카가 C구역 하운드를 격파해 특무 임무를 완수하고 S급으로 승진했다. 준영은 발목을 다쳐 걷기 어렵다.' }
   ];
   const result = await vm.runInContext('processNanoMemory', context)('room', messages, () => {}, { force: true });
   assert.equal(result.complete, true);
   const facts = data.get('nanoMemory:room').facts;
   assert.equal(facts.length, 3);
   assert.ok(facts.every(fact => fact.turn === 2));
-  const cards = vm.runInContext('nanoMemoryCards', context)('room', facts, '크리 특무 임무');
-  assert.ok(cards.some(card => card.title.includes('크리')));
+  const cards = vm.runInContext('nanoMemoryCards', context)('room', facts, '루카 특무 임무');
+  assert.ok(cards.some(card => card.title.includes('루카')));
   assert.ok(cards.some(card => card.title.includes('특무 임무')));
 });
 
@@ -156,7 +157,7 @@ test('Nano source gate rejects misspelled names and analysis text; the system as
   const { context } = workerHarness();
   const parse = vm.runInContext('parseNanoFacts', context);
   const source = [
-    { turn: 1, text: '크리가 준영을 도왔다.' },
+    { turn: 1, text: '루카가 준영을 도왔다.' },
     { turn: 2, text: '하나가 준영에게 물을 건넸다.' },
     { turn: 3, text: '준영은 물을 마시고 발목을 살폈다.' }
   ];
@@ -178,13 +179,13 @@ test('Nano source gate rejects misspelled names and analysis text; the system as
 test('Nano gate drops facts about unnamed actors and retrieval skips restatements', () => {
   const { context } = workerHarness();
   const parse = vm.runInContext('parseNanoFacts', context);
-  const source = [{ turn: 2, text: '크리가 사용자 몰래 상대방에게 봉을 던졌다. 서린은 B구역 수색에 합류했다.' }];
+  const source = [{ turn: 2, text: '루카가 사용자 몰래 상대방에게 봉을 던졌다. 서린은 B구역 수색에 합류했다.' }];
   const facts = parse(JSON.stringify([
     { turn: 2, keyword: '상대방', fact: '상대방이 봉에 맞았다.' },
-    { turn: 2, keyword: '크리', fact: '상대방이 크리의 봉에 맞았다.' },
-    { turn: 2, keyword: '크리', fact: '크리가 봉을 던졌다.' }
+    { turn: 2, keyword: '루카', fact: '상대방이 루카의 봉에 맞았다.' },
+    { turn: 2, keyword: '루카', fact: '루카가 봉을 던졌다.' }
   ]), 2, 'batch', 16, [2], new Map(), source);
-  assert.deepEqual(Array.from(facts, fact => fact.fact), ['크리가 봉을 던졌다.']);
+  assert.deepEqual(Array.from(facts, fact => fact.fact), ['루카가 봉을 던졌다.']);
 
   const retrieve = vm.runInContext('nanoMemoryCards', context);
   const cards = retrieve('dupes', [
@@ -199,50 +200,50 @@ test('user turns are memory sources and witnesses must appear in the source turn
   const { context } = workerHarness();
   const parse = vm.runInContext('parseNanoFacts', context);
   const source = [
-    { turn: 5, text: '크리는 서린에게 동생 지안이 7년 전 레드애쉬에서 실종됐다고 털어놓는다.' },
-    { turn: 6, text: '서린은 크리의 말을 듣고 지안의 몽타주를 떠올렸다.' }
+    { turn: 5, text: '루카는 서린에게 동생 지안이 7년 전 레드애쉬에서 실종됐다고 털어놓는다.' },
+    { turn: 6, text: '서린은 루카의 말을 듣고 지안의 몽타주를 떠올렸다.' }
   ];
   const facts = parse(JSON.stringify([
-    { turn: 5, keyword: '지안', domain: '인물', who: ['크리', '서린', '유빈'], fact: '크리는 동생 지안이 7년 전 레드애쉬에서 실종됐다고 서린에게 말했다.' },
+    { turn: 5, keyword: '지안', domain: '인물', who: ['루카', '서린', '유빈'], fact: '루카는 동생 지안이 7년 전 레드애쉬에서 실종됐다고 서린에게 말했다.' },
     { turn: 6, keyword: '서린', domain: '인물', who: [], fact: '서린은 지안의 몽타주를 떠올렸다.' },
     { turn: 6, keyword: '서린', domain: '인물', who: ['서린'], fact: '서린은 지안에 대해 이야기를 나눴다.' }
-  ]), 6, 'batch', 16, [5, 6], new Map([['크리', '인물'], ['서린', '인물'], ['유빈', '인물']]), source);
+  ]), 6, 'batch', 16, [5, 6], new Map([['루카', '인물'], ['서린', '인물'], ['유빈', '인물']]), source);
   assert.equal(facts.length, 2);
   assert.equal(facts[0].turn, 5);
-  assert.deepEqual(Array.from(facts[0].who), ['크리', '서린']);
-  assert.deepEqual(Array.from(facts[1].who).sort(), ['서린', '지안', '크리'].sort());
+  assert.deepEqual(Array.from(facts[0].who), ['루카', '서린']);
+  assert.deepEqual(Array.from(facts[1].who).sort(), ['서린', '지안', '루카'].sort());
 
   const line = engine.contextWithAll(null, [], '지안', { summaryCards: [
     { id: 'x', title: '지안', content: facts[0].fact, turn: 5, who: facts[0].who }
   ], budget: 2000 }).selected[0].line;
-  assert.equal(line, `[5 크리·서린] ${facts[0].fact}`);
+  assert.equal(line, `[5 루카·서린] ${facts[0].fact}`);
 });
 
 test('hearsay, guesses, clipped dialogue and empty facts are not kept', () => {
   const { context } = workerHarness();
   const parse = vm.runInContext('parseNanoFacts', context);
-  const source = [{ turn: 3, text: '레오는 발데르크가 대련장에서 소동을 벌였다더라고 했다. 시르드는 걱정해서... 아버지가... 라며 말을 흐렸다. 세리엔은 크리의 친구다.' }];
+  const source = [{ turn: 3, text: '레오는 발데르크가 대련장에서 소동을 벌였다더라고 했다. 시르드는 걱정해서... 아버지가... 라며 말을 흐렸다. 세리엔은 루카의 친구다.' }];
   const facts = parse(JSON.stringify([
     { keyword: '발데르크', fact: '발데르크가 대련장에서 소동을 벌였다더라.' },
     { keyword: '레오', fact: '레오는 그게 그렇게 분했나 보다.' },
     { keyword: '시르드', fact: '시르드는 걱정해서... 아버지가... 아니' },
     { keyword: '레오', fact: '레오😠' },
-    { keyword: '세리엔', fact: '세리엔은 크리의 친구다.' }
+    { keyword: '세리엔', fact: '세리엔은 루카의 친구다.' }
   ]), 3, 'batch', 16, [3], new Map(), source);
-  assert.deepEqual(Array.from(facts, fact => fact.fact), ['세리엔은 크리의 친구다.']);
+  assert.deepEqual(Array.from(facts, fact => fact.fact), ['세리엔은 루카의 친구다.']);
 });
 
 test('edited, disabled, deleted and excluded Nano facts affect retrieval without rewriting generated history', async () => {
   const { data, context, dispatch } = workerHarness();
   const facts = [
-    { id: 'a1:0', keyword: '크리', fact: '크리는 S급으로 승진했다.', turn: 2 },
+    { id: 'a1:0', keyword: '루카', fact: '루카는 S급으로 승진했다.', turn: 2 },
     { id: 'a1:1', keyword: '준영', fact: '준영은 다친 발목 때문에 걷기 어렵다.', turn: 2 },
     { id: 'a1:2', keyword: 'PX', fact: 'PX에서 컵라면을 팔았다.', turn: 2 }
   ];
   data.set('nanoMemory:room', { lastId: 'a1', facts });
   assert.equal((await dispatch({ type: 'GET_KEYWORD_REVIEW', chatId: 'room' })).keywords.length, 3);
   assert.equal((await dispatch({ type: 'UPDATE_NANO_FACT', chatId: 'room', factId: 'a1:0', patch: {
-    keyword: '승진', domain: '사건/약조', fact: '크리의 S급 승진은 대위급 이상에 해당한다.'
+    keyword: '승진', domain: '사건/약조', fact: '루카의 S급 승진은 대위급 이상에 해당한다.'
   } })).success, true);
   assert.equal((await dispatch({ type: 'UPDATE_NANO_FACT', chatId: 'room', factId: 'a1:1', patch: { enabled: false } })).success, true);
   assert.equal((await dispatch({ type: 'UPDATE_NANO_FACT', chatId: 'room', factId: 'a1:2', delete: true })).success, true);
@@ -251,7 +252,7 @@ test('edited, disabled, deleted and excluded Nano facts affect retrieval without
   assert.equal(visible[0].keyword, '승진');
   assert.equal(visible[0].domain, '사건/약조');
   assert.equal(visible[1].enabled, false);
-  const cards = vm.runInContext('nanoMemoryCards', context)('room', visible, '크리 준영');
+  const cards = vm.runInContext('nanoMemoryCards', context)('room', visible, '루카 준영');
   assert.equal(cards.some(card => card.title === '준영'), false);
   assert.equal((await dispatch({ type: 'DROP_KEYWORD', chatId: 'room', keyword: '승진' })).success, true);
   assert.equal((await dispatch({ type: 'GET_NANO_FACTS', chatId: 'room' })).facts.length, 1);
@@ -261,30 +262,31 @@ test('edited, disabled, deleted and excluded Nano facts affect retrieval without
 test('extension prompt renders readable cache lines and keeps only clearly related facts', () => {
   // Distinct events and keywords, so neither duplicate suppression nor the per-keyword cap drops them.
   const facts = [
-    '엘레노어는 항구에서 크리에게 지도를 넘겼다.',
+    '엘레노어는 항구에서 루카에게 지도를 넘겼다.',
     '엘레노어는 시장에서 상인과 다퉜다.',
     '엘레노어는 약국에서 해독제를 샀다.',
     '엘레노어는 성당 지하에 편지를 숨겼다.',
-    '엘레노어는 광장에서 크리와 재회를 약속했다.',
+    '엘레노어는 광장에서 루카와 재회를 약속했다.',
     '엘레노어는 창고 열쇠를 잃어버렸다.',
     '엘레노어는 다리 위에서 추격자를 따돌렸다.',
     '엘레노어는 숲길에서 왼팔을 다쳤다.',
-    '엘레노어는 기차역에서 크리를 배웅했다.',
+    '엘레노어는 기차역에서 루카를 배웅했다.',
     '엘레노어는 병원에 동생을 맡겼다.',
     '엘레노어는 학교 옥상에서 신호탄을 쐈다.',
     '엘레노어는 서고의 금서를 훔쳤다.',
     '엘레노어는 정원사에게 반지를 팔았다.',
-    '엘레노어는 탑 꼭대기에서 크리를 기다렸다.'
+    '엘레노어는 탑 꼭대기에서 루카를 기다렸다.'
   ].map((fact, index) => ({ id: `a${index}:0`, keyword: `엘레노어${index}`, turn: index + 1, fact }));
   const { context } = workerHarness();
-  const cards = vm.runInContext('nanoMemoryCards', context)('room', facts, '엘레노어 크리');
+  const cards = vm.runInContext('nanoMemoryCards', context)('room', facts, '엘레노어 루카');
   const selected = engine.contextWithAll(null, [], '엘레노어에 대해 말해줘.', { summaryCards: cards, budget: 2000 }).selected;
   const prompt = engine.composeUser('엘레노어에 대해 말해줘.', selected, 2000);
-  // Every fact naming both 엘레노어 and 크리 is in; facts sharing only the common name are not padding.
+  // Every fact naming both 엘레노어 and 루카 is in; facts sharing only the common name are not padding.
   assert.deepEqual(Array.from(cards, card => card.turn).sort((a, b) => a - b), [1, 5, 9, 14]);
   assert.equal(selected.length, 4);
-  assert.match(prompt, /<!--TRACE-->\n\[이전 대화에서 확인된 기억[^\n]*\]\n\[\d+\] /);
-  const turns = Array.from(prompt.matchAll(/^\[(\d+)\]/gm), match => Number(match[1]));
+  // The subject opening facts in several turns is a person, so it is shown as present.
+  assert.match(prompt, /<!--TRACE-->\n\[이전 대화에서 확인된 기억[^\n]*\]\n\[\d+ 엘레노어\] /);
+  const turns = Array.from(prompt.matchAll(/^\[(\d+)[ \]]/gm), match => Number(match[1]));
   assert.deepEqual(turns, [...turns].sort((a, b) => a - b));
   assert.doesNotMatch(prompt, /• 기억·/);
   assert.ok(prompt.length <= 2000);
@@ -296,7 +298,7 @@ test('local analysis supplies classified candidates before Nano writes facts', (
   const analyze = vm.runInContext('analyzeNanoWindow', context);
   const result = analyze([
     { id: 'u1', role: 'user', text: '서린에게 내일 작전을 묻는다.' },
-    { id: 'a1', role: 'assistant', text: '서린｜"내일 아침에 작전 회의를 하죠." 서린은 크리에게 레드애쉬 거점에서 만나기로 약속했다.' }
+    { id: 'a1', role: 'assistant', text: '서린｜"내일 아침에 작전 회의를 하죠." 서린은 루카에게 레드애쉬 거점에서 만나기로 약속했다.' }
   ]);
   assert.match(result.hints, /서린\(인물\)/);
   assert.equal(result.domains.get('서린'), '인물');
@@ -346,18 +348,18 @@ test('full Nano rebuild keeps old memory until a complete replacement succeeds',
 test('full rebuild keeps a manual correction attached to the same source fact', async () => {
   const { data, context } = workerHarness();
   data.set('memoryMaxTurns', 1);
-  data.set('nanoMemory:room', { lastId: 'a1', facts: [{ id: 'a1:0', sourceId: 'a1', keyword: '크리',
-    fact: '크리가 S급으로 승진했다.', turn: 2 }] });
-  data.set('nanoOverrides:room', { 'a1:0': { fact: '크리의 S급 승진은 대위급 이상에 해당한다.' } });
+  data.set('nanoMemory:room', { lastId: 'a1', facts: [{ id: 'a1:0', sourceId: 'a1', keyword: '루카',
+    fact: '루카가 S급으로 승진했다.', turn: 2 }] });
+  data.set('nanoOverrides:room', { 'a1:0': { fact: '루카의 S급 승진은 대위급 이상에 해당한다.' } });
   context.chrome.runtime.sendMessage = async () => ({ success: true,
-    text: '[{"keyword":"크리","fact":"크리는 S급으로 승진했다.","turn":2}]' });
+    text: '[{"keyword":"루카","fact":"루카는 S급으로 승진했다.","turn":2}]' });
   const messages = [{ id: 'u1', role: 'user', text: '승진했어?' },
-    { id: 'a1', role: 'assistant', text: '크리는 S급으로 승진했다.' }];
+    { id: 'a1', role: 'assistant', text: '루카는 S급으로 승진했다.' }];
   await vm.runInContext('processNanoMemory', context)('room', messages, () => {}, { force: true, rebuild: true });
   const visible = vm.runInContext('effectiveNanoFacts', context)(data.get('nanoMemory:room').facts,
     data.get('nanoOverrides:room'));
   assert.equal(visible[0].id, 'a1:0');
-  assert.equal(visible[0].fact, '크리의 S급 승진은 대위급 이상에 해당한다.');
+  assert.equal(visible[0].fact, '루카의 S급 승진은 대위급 이상에 해당한다.');
 });
 
 test('context assembly never exceeds the fixed 2000-character send limit', () => {
@@ -384,7 +386,7 @@ test('room statistics read only that room checkpoint and actual-send counters', 
   data.set('snap:room-a', { messages: [
     { id: 'a1', role: 'assistant' }, { id: 'a2', role: 'assistant' }
   ] });
-  data.set('nanoMemory:room-a', { lastId: 'a1', facts: [{ id: 'fact', keyword: '크리', fact: '크리는 은빛 열쇠를 받았다.' }], updatedAt: 123 });
+  data.set('nanoMemory:room-a', { lastId: 'a1', facts: [{ id: 'fact', keyword: '루카', fact: '루카는 은빛 열쇠를 받았다.' }], updatedAt: 123 });
   data.set('snap:room-b', { messages: [{ id: 'b1', role: 'assistant' }] });
   const today = new Date().toISOString().slice(0, 10);
   data.set(`analyticsRoomV2:room-a:${today}`, { sends: 2, injected: 3 });
@@ -411,8 +413,8 @@ test('storage cleanup preserves memory across more than thirty chat rooms', asyn
 
 test('rule-based memory skips status labels and never writes placeholder summaries', () => {
   const graph = engine.stepSlidingWindowGraph(engine.createEvolutionGraph(), [
-    { role: 'assistant', text: '크리｜Lv.1 | HP 100\n속보: 던전 붕괴\n목표: 훈련 완료\n▍루시아 「 크리, 어디 가요?\n*루시아는 크리의 소매를 붙잡았다.' },
-    { role: 'user', text: '크리는 루시아에게 금방 돌아오겠다고 약속했다.' }
+    { role: 'assistant', text: '루카｜Lv.1 | HP 100\n속보: 던전 붕괴\n목표: 훈련 완료\n▍루시아 「 루카, 어디 가요?\n*루시아는 루카의 소매를 붙잡았다.' },
+    { role: 'user', text: '루카는 루시아에게 금방 돌아오겠다고 약속했다.' }
   ], 1, 2);
   const speakers = graph.nodes.filter(node => node.role === 'speaker').map(node => node.keyword);
   assert.ok(!speakers.some(name => /속보|목표|Lv/.test(name)));
@@ -478,8 +480,8 @@ test('budget: skip what the live context restates, favor people in the scene, ke
   const { context } = workerHarness();
   const retrieve = vm.runInContext('nanoMemoryCards', context);
   const facts = [
-    { id: 'f1', keyword: '루시아', domain: '인물', fact: '루시아는 크리에게 성수를 건네며 치료를 약속했다.', turn: 3, who: ['루시아', '크리'] },
-    { id: 'f2', keyword: '루시아', domain: '인물', fact: '루시아는 크리에게 성수를 건네며 치료를 약속했다.', turn: 9, who: ['루시아', '크리'] },
+    { id: 'f1', keyword: '루시아', domain: '인물', fact: '루시아는 루카에게 성수를 건네며 치료를 약속했다.', turn: 3, who: ['루시아', '루카'] },
+    { id: 'f2', keyword: '루시아', domain: '인물', fact: '루시아는 루카에게 성수를 건네며 치료를 약속했다.', turn: 9, who: ['루시아', '루카'] },
     { id: 'f3', keyword: '로완', domain: '인물', fact: '로완은 결투에서 왼팔을 다쳐 붕대를 감았다.', turn: 5, who: ['로완'] },
     { id: 'f4', keyword: '성검', domain: '개념', fact: '성검 아르테미스는 황실 지하 보물고에 봉인되어 있다.', turn: 7, who: [] }
   ];
@@ -493,12 +495,12 @@ test('budget: skip what the live context restates, favor people in the scene, ke
 
 test('memories sharing a turn and people share one line; legacy markers still strip', () => {
   const cards = [
-    { id: 'a', title: '크리', content: '크리는 은빛 열쇠를 받았다.', turn: 12, who: ['크리', '서린'] },
-    { id: 'b', title: '서린', content: '서린은 B구역 지도를 펼쳤다.', turn: 12, who: ['크리', '서린'] }
+    { id: 'a', title: '루카', content: '루카는 은빛 열쇠를 받았다.', turn: 12, who: ['루카', '서린'] },
+    { id: 'b', title: '서린', content: '서린은 B구역 지도를 펼쳤다.', turn: 12, who: ['루카', '서린'] }
   ];
   const selected = engine.contextWithAll(null, [], '간다', { summaryCards: cards, budget: 2000 }).selected;
   const prompt = engine.composeUser('간다', selected, 2000);
-  assert.match(prompt, /^\[12 크리·서린\] 크리는 은빛 열쇠를 받았다\. \/ 서린은 B구역 지도를 펼쳤다\.$/m);
+  assert.match(prompt, /^\[12 루카·서린\] 루카는 은빛 열쇠를 받았다\. \/ 서린은 B구역 지도를 펼쳤다\.$/m);
   assert.equal((prompt.match(/\[12 /g) || []).length, 1);
   assert.equal(engine.stripOwnBlock('<!--CRACK_UBIS_CONTEXT_START-->\n옛 기억\n<!--CRACK_UBIS_CONTEXT_END-->\n본문'), '본문');
   assert.equal(engine.stripOwnBlock(prompt), '간다');
@@ -529,26 +531,26 @@ test('memory kinds are kept and lasting kinds outrank passing ones', () => {
   const { context } = workerHarness();
   const parse = vm.runInContext('parseNanoFacts', context);
   const facts = parse(JSON.stringify([
-    { keyword: '서린', kind: '약속', fact: '서린은 해 뜨기 전 B구역 입구에서 크리를 기다리기로 했다.' },
+    { keyword: '서린', kind: '약속', fact: '서린은 해 뜨기 전 B구역 입구에서 루카를 기다리기로 했다.' },
     { keyword: '서린', kind: '아무거나', fact: '서린은 B구역 입구 쪽 창문을 열었다.' }
-  ]), 2, 'batch', 16, [2], new Map(), [{ turn: 2, text: '서린은 B구역 입구 쪽 창문을 열고, 해 뜨기 전 입구에서 크리를 기다리겠다고 했다.' }]);
+  ]), 2, 'batch', 16, [2], new Map(), [{ turn: 2, text: '서린은 B구역 입구 쪽 창문을 열고, 해 뜨기 전 입구에서 루카를 기다리겠다고 했다.' }]);
   assert.deepEqual(Array.from(facts, fact => fact.kind), ['약속', '']);
   const cards = vm.runInContext('nanoMemoryCards', context)('kinds', facts.map(fact => ({ ...fact, turn: 2 })), '서린 B구역 입구', 10);
-  assert.equal(cards[0].content, '서린은 해 뜨기 전 B구역 입구에서 크리를 기다리기로 했다.');
+  assert.equal(cards[0].content, '서린은 해 뜨기 전 B구역 입구에서 루카를 기다리기로 했다.');
 });
 
 test('glances, copied system lines, "no information" and adjective stems are not kept', () => {
   const { context } = workerHarness();
   const parse = vm.runInContext('parseNanoFacts', context);
-  const source = [{ turn: 3, text: '「세계 최초의 히든 직업이 확인되었어요!」 차세린은 크리를 평가하는 듯한 시선을 던졌다. 백은하가 말했다. "크리 씨는 유일한 배틀메이지예요. 정말 유일해요." 크리의 직업 배틀메이지는 기록에 없는 히든 직업이다.' }];
+  const source = [{ turn: 3, text: '「세계 최초의 히든 직업이 확인되었어요!」 차세린은 루카를 평가하는 듯한 시선을 던졌다. 백은하가 말했다. "루카 씨는 유일한 배틀메이지예요. 정말 유일해요." 루카의 직업 배틀메이지는 기록에 없는 히든 직업이다.' }];
   const facts = parse(JSON.stringify([
     { keyword: '히든 직업', kind: '설정', fact: '세계 최초의 히든 직업이 확인되었어요!' },
-    { keyword: '차세린', kind: '관계', fact: '차세린은 크리를 평가하는 듯한 시선을 던졌다.' },
-    { keyword: '차세린', kind: '비밀', fact: '차세린은 크리에 대한 정보가 없음.' },
-    { keyword: '유일', domain: '인물', kind: '설정', who: ['유일', '백은하'], fact: '크리는 유일한 배틀메이지다.' },
+    { keyword: '차세린', kind: '관계', fact: '차세린은 루카를 평가하는 듯한 시선을 던졌다.' },
+    { keyword: '차세린', kind: '비밀', fact: '차세린은 루카에 대한 정보가 없음.' },
+    { keyword: '유일', domain: '인물', kind: '설정', who: ['유일', '백은하'], fact: '루카는 유일한 배틀메이지다.' },
     { keyword: '배틀메이지', kind: '설정', who: ['백은하', '유일'], fact: '배틀메이지는 기록에 없는 히든 직업이다.' }
   ]), 3, 'batch', 16, [3], new Map([['백은하', '인물']]), source);
-  assert.deepEqual(Array.from(facts, fact => fact.fact), ['크리는 유일한 배틀메이지다.', '배틀메이지는 기록에 없는 히든 직업이다.']);
+  assert.deepEqual(Array.from(facts, fact => fact.fact), ['루카는 유일한 배틀메이지다.', '배틀메이지는 기록에 없는 히든 직업이다.']);
   assert.equal(facts[0].domain, '개념');
   assert.deepEqual(Array.from(facts[1].who), ['백은하']);
 });
@@ -556,14 +558,14 @@ test('glances, copied system lines, "no information" and adjective stems are not
 test('copied prompt templates are stripped and name variants of one person merge', () => {
   const { context } = workerHarness();
   const parse = vm.runInContext('parseNanoFacts', context);
-  const source = [{ turn: 25, text: '로완 리드가 웃었다. 로완은 자신의 마력이 받은 피해를 열로 바꿔 방출한다고 크리에게 말했다. 그녀의 마력은 용광로 그 자체였다.' }];
+  const source = [{ turn: 25, text: '로완 리드가 웃었다. 로완은 자신의 마력이 받은 피해를 열로 바꿔 방출한다고 루카에게 말했다. 그녀의 마력은 용광로 그 자체였다.' }];
   const facts = parse(JSON.stringify([
-    { keyword: '로완', kind: '설정', who: ['크리', '로완', '로완 리드'], fact: '누가 ~라고 말했다: 로완은 자신의 마력이 피해를 열로 바꿔 방출한다고 말했다.' },
-    { keyword: '로완', kind: '설정', who: ['크리'], fact: '누가 ~라고 말했다: 그녀의 마력은 용광로 그 자체였다.' },
+    { keyword: '로완', kind: '설정', who: ['루카', '로완', '로완 리드'], fact: '누가 ~라고 말했다: 로완은 자신의 마력이 피해를 열로 바꿔 방출한다고 말했다.' },
+    { keyword: '로완', kind: '설정', who: ['루카'], fact: '누가 ~라고 말했다: 그녀의 마력은 용광로 그 자체였다.' },
     { keyword: '로완', kind: '설정', who: [], fact: '로완은 누가 ~라고 했다.' }
-  ]), 25, 'batch', 16, [25], new Map([['로완', '인물'], ['크리', '인물']]), source);
+  ]), 25, 'batch', 16, [25], new Map([['로완', '인물'], ['루카', '인물']]), source);
   assert.deepEqual(Array.from(facts, fact => fact.fact), ['로완은 자신의 마력이 피해를 열로 바꿔 방출한다고 말했다.']);
-  assert.deepEqual(Array.from(facts[0].who), ['크리', '로완']);
+  assert.deepEqual(Array.from(facts[0].who), ['루카', '로완']);
 });
 
 test('a one-word query brings its match, not every memory about people in the scene', () => {
@@ -572,10 +574,10 @@ test('a one-word query brings its match, not every memory about people in the sc
   const people = ['차세린', '로완', '루시아', '아델하이트'];
   const facts = people.flatMap((name, p) => [0, 1, 2, 3].map(i => ({
     id: `${name}${i}`, keyword: name, domain: '인물', turn: p * 10 + i + 1,
-    fact: i === 0 ? `${name}은 크리를 보고 헛웃음을 터뜨렸다.` : `${name}은 ${['검술', '마력', '가문', '약속'][i]}에 대해 크리와 이야기했다 ${i}.`
+    fact: i === 0 ? `${name}은 루카를 보고 헛웃음을 터뜨렸다.` : `${name}은 ${['검술', '마력', '가문', '약속'][i]}에 대해 루카와 이야기했다 ${i}.`
   })));
-  facts.push({ id: 'neuro', keyword: '크리', domain: '인물', turn: 42, fact: '크리의 마력화된 신경은 새로운 능력이다.' });
-  const cards = retrieve('scene', facts, '신경마도화', 100, '차세린과 로완, 루시아, 아델하이트가 크리를 둘러쌌다.');
+  facts.push({ id: 'neuro', keyword: '루카', domain: '인물', turn: 42, fact: '루카의 마력화된 신경은 새로운 능력이다.' });
+  const cards = retrieve('scene', facts, '신경마도화', 100, '차세린과 로완, 루시아, 아델하이트가 루카를 둘러쌌다.');
   assert.equal(cards[0]?.id, 'nano:neuro');
   assert.ok(cards.length <= 7, `${cards.length} cards`);
   assert.ok(cards.every(card => !/헛웃음/.test(card.content)));
@@ -585,10 +587,10 @@ test('keyword cards: updates and restatements move older notes to history; overf
   const { context } = workerHarness();
   const fold = vm.runInContext('foldMemory', context);
   const facts = [
-    { id: 'r1', keyword: '로완', kind: '관계', turn: 10, fact: '로완은 크리를 믿지 못하고 경계했다.' },
-    { id: 'r2', keyword: '로완', kind: '관계', turn: 30, fact: '로완은 크리를 믿고 등을 맡겼다.' },
+    { id: 'r1', keyword: '로완', kind: '관계', turn: 10, fact: '로완은 루카를 믿지 못하고 경계했다.' },
+    { id: 'r2', keyword: '로완', kind: '관계', turn: 30, fact: '로완은 루카를 믿고 등을 맡겼다.' },
     { id: 'r3', keyword: '로완', kind: '설정', turn: 12, fact: '로완의 마력은 피해를 열로 바꾼다.' },
-    ...[1, 2, 3, 4].map(i => ({ id: `e${i}`, keyword: '로완', kind: '경험', turn: 40 + i, fact: `로완은 ${['항구', '광장', '탑', '숲'][i - 1]}에서 크리와 ${['낚시', '축제', '야경', '사냥'][i - 1]}를 즐겼다.` }))
+    ...[1, 2, 3, 4].map(i => ({ id: `e${i}`, keyword: '로완', kind: '경험', turn: 40 + i, fact: `로완은 ${['항구', '광장', '탑', '숲'][i - 1]}에서 루카와 ${['낚시', '축제', '야경', '사냥'][i - 1]}를 즐겼다.` }))
   ];
   const card = fold(facts, { r2: { action: 'update', target: 'r1' } }).get('로완');
   const current = Array.from(card.current, note => note.id);
@@ -605,10 +607,10 @@ test('without an LLM, the original passages that match the draft are injected wi
   data.set('llmIntervention', false);
   const all = [];
   for (let i = 0; i < 20; i++) {
-    all.push({ id: `u${i}`, role: 'user', text: `크리는 ${i}번째로 주변을 살핀다.` });
+    all.push({ id: `u${i}`, role: 'user', text: `루카는 ${i}번째로 주변을 살핀다.` });
     all.push({ id: `a${i}`, role: 'assistant', text: i === 4
-      ? '⌛42｜7/21[월] 8일차 낮 13:10☁️ 🏢관리국 - 총장실\n지크의 사무실은 관리국 지하 3층 끝에 있었다. 지크는 크리에게 측정실 열쇠를 건넸다.\n물자 획득 탄약 5.56mm x90'
-      : `크리는 ${i}번째 복도를 지나갔다. 창밖에는 비가 내렸다.` });
+      ? '⌛42｜7/21[월] 8일차 낮 13:10☁️ 🏢관리국 - 총장실\n지크의 사무실은 관리국 지하 3층 끝에 있었다. 지크는 루카에게 측정실 열쇠를 건넸다.\n물자 획득 탄약 5.56mm x90'
+      : `루카는 ${i}번째 복도를 지나갔다. 창밖에는 비가 내렸다.` });
   }
   vm.runInContext('activeMemory', context).set('room', { chatId: 'room', all, units: [], ix: null });
   const job = await vm.runInContext('processNanoMemory', context)('room', all, () => {}, { force: true });
@@ -616,14 +618,14 @@ test('without an LLM, the original passages that match the draft are injected wi
   assert.equal(promptCount(), 0);
   assert.equal(data.has('nanoMemory:room'), false, 'no memory log is written without an LLM');
   const prepared = await dispatch({ type: 'GET_PREPARED_CONTEXT', chatId: 'room', outgoing: '지크의 측정실 열쇠를 쓴다' });
-  assert.match(prepared.content, /^\[10 8일차 관리국 - 총장실\] 지크의 사무실은 관리국 지하 3층 끝에 있었다\. 지크는 크리에게 측정실 열쇠를 건넸다\.$/m);
+  assert.match(prepared.content, /^\[10 8일차 관리국 - 총장실\] 지크의 사무실은 관리국 지하 3층 끝에 있었다\. 지크는 루카에게 측정실 열쇠를 건넸다\.$/m);
   assert.doesNotMatch(prepared.content, /⌛|물자 획득/);
 });
 
 test('turning the LLM on after a rule-written log reads the chat again instead of doing nothing', async () => {
   const { data, context, promptCount } = workerHarness();
   data.set('memoryMaxTurns', 1);
-  data.set('nanoMemory:room', { lastId: 'a1', facts: [{ id: 'x:r:1', keyword: '크리', fact: '크리는 층을 올랐다.', turn: 2, source: 'rule' }] });
+  data.set('nanoMemory:room', { lastId: 'a1', facts: [{ id: 'x:r:1', keyword: '루카', fact: '루카는 층을 올랐다.', turn: 2, source: 'rule' }] });
   const messages = [
     { id: 'u1', role: 'user', text: '엘레노어에게 열쇠를 맡긴다.' },
     { id: 'a1', role: 'assistant', text: '엘레노어가 은빛 열쇠를 맡았다.' }
@@ -636,31 +638,31 @@ test('turning the LLM on after a rule-written log reads the chat again instead o
 
 test('passages keep a speaker with the whole quote and drop tiny fragments', () => {
   const lines = ['⌛5｜1일차 🏠레드애쉬 거점', '서린은 분대원들을 둘러보았다.', '서린｜"계급은... 동급이니까요. 누가 명령하는 구조는 아닙니다."', '지안｜"오 민주주의다!"'];
-  const long = `크리｜"${'이건 아주 긴 대사입니다. '.repeat(20)}"`;
+  const long = `루카｜"${'이건 아주 긴 대사입니다. '.repeat(20)}"`;
   const pix = engine.buildPassageIndex([{ text: lines.join('\n') }, { text: '뭐라도 해야했으니까요..' }, { text: long }]);
   const texts = Array.from(pix.units, unit => unit.text);
   assert.ok(texts.some(text => text.includes('서린｜"계급은... 동급이니까요. 누가 명령하는 구조는 아닙니다."')));
   assert.ok(texts.every(text => !/^[^｜]*"\s*$/.test(text)), 'no passage starts inside a quote');
   assert.ok(!texts.includes('뭐라도 해야했으니까요..'));
   assert.equal(pix.units[0].scene, '1일차 레드애쉬 거점');
-  assert.ok(texts.filter(text => text.startsWith('크리｜')).length >= 1);
+  assert.ok(texts.filter(text => text.startsWith('루카｜')).length >= 1);
 });
 
 test('who keeps only words the chat uses as names', () => {
   const { context } = workerHarness();
   const parse = vm.runInContext('parseNanoFacts', context);
-  const source = [{ turn: 1, text: '서린이 정신을 차렸다. 지안은 허리춤에 칼을 찼다. 특무를 받은 크리에게 서린은 지도를 건넸다.' }];
+  const source = [{ turn: 1, text: '서린이 정신을 차렸다. 지안은 허리춤에 칼을 찼다. 특무를 받은 루카에게 서린은 지도를 건넸다.' }];
   const facts = parse(JSON.stringify([
-    { keyword: '서린', kind: '약속', who: ['서린', '정신', '허리춤', '특무', '[]', '크리'], fact: '서린은 크리에게 B구역 지도를 건넸다.' }
+    { keyword: '서린', kind: '약속', who: ['서린', '정신', '허리춤', '특무', '[]', '루카'], fact: '서린은 루카에게 B구역 지도를 건넸다.' }
   ]), 1, 'batch', 16, [1], new Map(), source);
-  assert.deepEqual(Array.from(facts[0].who), ['서린', '크리']);
+  assert.deepEqual(Array.from(facts[0].who), ['서린', '루카']);
 });
 
 test('passage search puts the named person first, their own lines above mentions', () => {
   const msgs = [
     { text: '유빈｜"독버섯은 제가 구분하니까 건드리지 마세요." 유빈은 채집 바구니를 들었다.' },
-    { text: '서린｜"유빈은 원래 말이 없어요." 서린이 크리에게 속삭였다.' },
-    { text: '유빈｜"...괜찮은 사람이에요." 유빈이 크리를 보며 짧게 말했다.' },
+    { text: '서린｜"유빈은 원래 말이 없어요." 서린이 루카에게 속삭였다.' },
+    { text: '유빈｜"...괜찮은 사람이에요." 유빈이 루카를 보며 짧게 말했다.' },
     { text: '서린｜"오늘은 여기서 쉬죠." 서린은 지도를 접었다. 모두 거실에 모였다.' },
     ...Array.from({ length: 12 }, (_, i) => ({ text: `창밖에는 ${i}번째 비가 내렸다. 거리는 조용했고 멀리서 개가 짖었다.` }))
   ];
@@ -670,6 +672,28 @@ test('passage search puts the named person first, their own lines above mentions
   assert.ok(picked.length >= 2);
   assert.ok(picked.some(unit => unit.speakers.includes('유빈')), JSON.stringify(picked.map(p => p.text)));
   assert.ok(picked.every(unit => !/개가 짖었다/.test(unit.text)));
+});
+
+test('status-window labels are not taken for speakers; marked names are', () => {
+  const status = '오늘 아침 관리국 발표에 따르면 북부 구역 일대에서 원인 불명의 정전 현상이 다수 보고되었다는 소식이 전해졌다 ─ 〔인연〕 ▸서린｜😏·이제 내꺼야｜Lv.86｜3위 ▸유빈｜💓·지켜줄게｜Lv.80｜4위 〔👤〕 루카｜Lv.1｜배틀메이지 상태:[평온함] 능력: 공상구현화(숙련) 등급: 미측정';
+  const msgs = [status, status, '서린｜"가자." 서린은 문을 열었다. 거리는 조용했다.', '서린｜"쉬자." 서린은 지도를 접었다. 모두 모였다.'].map(text => ({ text }));
+  const names = engine.buildPassageIndex(msgs).names;
+  for (const name of ['루카', '서린', '유빈']) assert.ok(names.has(name), name);
+  for (const junk of ['상태', '능력', '등급', '내꺼야']) assert.ok(!names.has(junk), junk);
+});
+
+test('a label line names the speaker of the quotes below it; unnamed voices are not names', () => {
+  const said = '**『 서은채 』**\n「 오늘은 여기까지 하자. 내일 다시 오면 돼. 」\n「 그때는 같이 가는 거야, 알겠지? 」';
+  const voice = '남자｜"거기 누구야? 당장 나와라, 쏘기 전에." 남자는 총구를 들어 올렸다.';
+  const names = engine.buildPassageIndex([said, voice, said, voice].map(text => ({ text }))).names;
+  assert.ok(names.has('서은채'));
+  assert.ok(!names.has('남자'));
+});
+
+test('a name does not match inside another word', () => {
+  assert.ok(!engine.keywordAppears('콘크리트 교각', '크리'));
+  assert.ok(engine.keywordAppears('채연만이 웃었다', '채연'));
+  assert.ok(engine.keywordAppears('허민한테는 비밀', '허민'));
 });
 
 test('a room can switch its user note off without losing the text', async () => {
@@ -732,11 +756,11 @@ test('an old memory pushed out of the current five is recalled when the draft as
   const { context } = workerHarness();
   const retrieve = vm.runInContext('nanoMemoryCards', context);
   const facts = [
-    { id: 'old', keyword: '세리엔', kind: '경험', turn: 5, fact: '세리엔은 크리에게 어린 시절 은방울꽃 정원에서 검을 처음 가르쳐 주었다.' },
+    { id: 'old', keyword: '세리엔', kind: '경험', turn: 5, fact: '세리엔은 루카에게 어린 시절 은방울꽃 정원에서 검을 처음 가르쳐 주었다.' },
     ...[1, 2, 3, 4, 5].map(i => ({ id: `n${i}`, keyword: '세리엔', kind: '설정', turn: 50 + i,
       fact: `세리엔은 ${['금빛 눈', '정검 교정', '관람석', '복도', '가문 규율'][i - 1]}에 관한 ${i}번째 설정을 가졌다.` })),
-    { id: 'stale', keyword: '세리엔', kind: '관계', turn: 8, fact: '세리엔은 크리를 가문의 수치로 경멸했다.' },
-    { id: 'fresh', keyword: '세리엔', kind: '관계', turn: 60, fact: '세리엔은 크리를 가문의 수치로 보지 않게 되었다.' }
+    { id: 'stale', keyword: '세리엔', kind: '관계', turn: 8, fact: '세리엔은 루카를 가문의 수치로 경멸했다.' },
+    { id: 'fresh', keyword: '세리엔', kind: '관계', turn: 60, fact: '세리엔은 루카를 가문의 수치로 보지 않게 되었다.' }
   ];
   const fold = vm.runInContext('foldMemory', context)(facts, { fresh: { action: 'update', target: 'stale' } });
   assert.ok(fold.get('세리엔').history.some(note => note.id === 'old' && note.reason === 'overflow'));
@@ -744,16 +768,16 @@ test('an old memory pushed out of the current five is recalled when the draft as
   assert.ok(asked.some(card => card.id === 'nano:old'), 'dormant memory returns when asked');
   const unrelated = retrieve('old', facts, '오늘 저녁 메뉴는 뭐야', 100, '세리엔이 복도를 걸었다.', '', { fresh: { action: 'update', target: 'stale' } });
   assert.ok(!unrelated.some(card => card.id === 'nano:old'), 'dormant memory is not used as filler');
-  const stale = retrieve('old', facts, '세리엔은 크리를 가문의 수치로 경멸했다', 100, '', '', { fresh: { action: 'update', target: 'stale' } });
+  const stale = retrieve('old', facts, '세리엔은 루카를 가문의 수치로 경멸했다', 100, '', '', { fresh: { action: 'update', target: 'stale' } });
   assert.ok(!stale.some(card => card.id === 'nano:stale'), 'a replaced state never comes back');
 });
 
 test('the subject of the conversation brings its linked memories, even when the draft only points at it', async () => {
   const { data, context, dispatch } = workerHarness();
   const facts = [
-    { id: 'c1', keyword: '대행 계약', kind: '약속', turn: 3, who: ['크리', '지평선을 그은자'], fact: '크리는 지평선을 그은자와 대행 계약을 맺고 봉에 질량 조작 권능을 받았다.' },
-    { id: 'c2', keyword: '지평선을 그은자', kind: '설정', turn: 3, who: ['크리'], fact: '지평선을 그은자는 대행 계약의 대가로 크리의 싸움을 생중계로 지켜본다.' },
-    { id: 'c3', keyword: '김도윤', kind: '관계', turn: 10, who: ['김도윤', '크리'], fact: '김도윤은 크리를 미등록 대행자로 판단했다.' },
+    { id: 'c1', keyword: '대행 계약', kind: '약속', turn: 3, who: ['루카', '지평선을 그은자'], fact: '루카는 지평선을 그은자와 대행 계약을 맺고 봉에 질량 조작 권능을 받았다.' },
+    { id: 'c2', keyword: '지평선을 그은자', kind: '설정', turn: 3, who: ['루카'], fact: '지평선을 그은자는 대행 계약의 대가로 루카의 싸움을 생중계로 지켜본다.' },
+    { id: 'c3', keyword: '김도윤', kind: '관계', turn: 10, who: ['김도윤', '루카'], fact: '김도윤은 루카를 미등록 대행자로 판단했다.' },
     { id: 'c4', keyword: '편의점', kind: '설정', turn: 12, who: [], fact: '편의점 창고에는 건전지 네 개가 남아 있었다.' }
   ];
   const retrieve = vm.runInContext('nanoMemoryCards', context);
@@ -786,11 +810,11 @@ test('turns are read when the next one would overflow the model input, the rest 
   const prompts = [];
   context.chrome.runtime.sendMessage = async message => {
     if (message.type !== 'LLM_PROMPT') return undefined;
-    if (!/^각 번호마다/.test(message.prompt)) prompts.push(message.prompt);
+    if (!/^각 번호마다|^아래 \[기억\]/.test(message.prompt)) prompts.push(message.prompt);
     return { success: true, text: '[]', quota: 0 };
   };
   const turn = (i, size) => [
-    { id: `u${i}`, role: 'user', text: `크리가 ${i}번째로 말한다.` },
+    { id: `u${i}`, role: 'user', text: `루카가 ${i}번째로 말한다.` },
     { id: `a${i}`, role: 'assistant', text: `${i}번째 답: ${'가'.repeat(size)}` }
   ];
   // 1, 2, 3 fit in 1,000 characters; 4 would overflow.
@@ -815,7 +839,7 @@ test('with equal relevance, the older memory ranks first: it is the likelier one
   const facts = [
     { id: 'recent', keyword: '루시아', kind: '설정', turn: 95, fact: '루시아는 성당 종탑의 열쇠를 가지고 있다.' },
     { id: 'old', keyword: '아델하이트', kind: '설정', turn: 5, fact: '아델하이트는 성당 지하 서고의 열쇠를 가지고 있다.' },
-    { id: 'filler', keyword: '크리', kind: '경험', turn: 100, fact: '크리는 광장에서 빵을 샀다.' }
+    { id: 'filler', keyword: '루카', kind: '경험', turn: 100, fact: '루카는 광장에서 빵을 샀다.' }
   ];
   const cards = retrieve('age', facts, '성당 열쇠를 가진 사람', 200);
   assert.deepEqual(Array.from(cards.slice(0, 2), card => card.id), ['nano:old', 'nano:recent']);
@@ -825,8 +849,8 @@ test('an old memory comes with the newest lasting note about the same subject', 
   const { context } = workerHarness();
   const retrieve = vm.runInContext('nanoMemoryCards', context);
   const facts = [
-    { id: 'then', keyword: '로완', kind: '경험', turn: 10, fact: '로완은 대련장에서 크리의 목검을 부러뜨렸다.' },
-    { id: 'now', keyword: '로완', kind: '관계', turn: 80, fact: '로완은 크리를 동료로 인정하고 등을 맡겼다.' },
+    { id: 'then', keyword: '로완', kind: '경험', turn: 10, fact: '로완은 대련장에서 루카의 목검을 부러뜨렸다.' },
+    { id: 'now', keyword: '로완', kind: '관계', turn: 80, fact: '로완은 루카를 동료로 인정하고 등을 맡겼다.' },
     { id: 'other', keyword: '서린', kind: '설정', turn: 50, fact: '서린은 약국 위치를 알고 있다.' }
   ];
   const cards = retrieve('bridge', facts, '대련장에서 목검 부러뜨렸던 거 기억나?', 200);
@@ -862,8 +886,8 @@ test('a chat branched from another starts with the original memory up to the bra
   const shared = Array.from({ length: 6 }, (_, i) => ({ id: `o${i}`, role: i % 2 ? 'assistant' : 'user', text: `공통 대화 ${i}` }));
   data.set('snap:origin', { messages: [...shared, { id: 'o6', role: 'user', text: '원본에서만 한 말' }] });
   data.set('nanoMemory:origin', { lastId: 'o5', facts: [
-    { id: 'k1', keyword: '크리', fact: '크리는 은빛 열쇠를 받았다.', turn: 2 },
-    { id: 'k2', keyword: '크리', fact: '크리는 원본에서만 성당에 갔다.', turn: 7 }
+    { id: 'k1', keyword: '루카', fact: '루카는 은빛 열쇠를 받았다.', turn: 2 },
+    { id: 'k2', keyword: '루카', fact: '루카는 원본에서만 성당에 갔다.', turn: 7 }
   ] });
   data.set('pins:origin', [{ messageId: 'o3', turn: 4, text: '고정한 대화' }]);
   data.set('lore:origin', [{ title: '성검', content: '성검은 황실 보물고에 있다.' }]);
@@ -894,10 +918,10 @@ test('meaning search: embedding ranks join word search, and a slow answer does n
   data.set('semanticSearch', true);
   const all = [];
   for (let i = 0; i < 20; i++) {
-    all.push({ id: `u${i}`, role: 'user', text: `크리는 ${i}번째로 복도를 걷는다.` });
+    all.push({ id: `u${i}`, role: 'user', text: `루카는 ${i}번째로 복도를 걷는다.` });
     all.push({ id: `a${i}`, role: 'assistant', text: i === 3
       ? '글레이드 가문의 메이드는 주인에게 애정을 품지 않는 것이 규율이었다. 샤일은 그 규율을 지켜 왔다.'
-      : `크리는 ${i}번째 복도를 지나갔다. 창밖에는 비가 내렸다.` });
+      : `루카는 ${i}번째 복도를 지나갔다. 창밖에는 비가 내렸다.` });
   }
   vm.runInContext('activeMemory', context).set('room', { chatId: 'room', all, units: [], ix: null });
   context.chrome.offscreen = { createDocument: async () => {} };
@@ -979,4 +1003,173 @@ test('a release is newer only when its version is higher, part by part', () => {
   assert.equal(newer('v0.10.1', '0.10.0'), true);
   assert.equal(newer('0.10.0', '0.10.0'), false);
   assert.equal(newer('0.9.9', '0.10.0'), false, 'a development build ahead of the release is left alone');
+});
+
+test('the overview board is parsed into its four fields; empty ones are left out', () => {
+  const { context } = workerHarness();
+  const parse = vm.runInContext('parseOverview', context);
+  const board = parse('**장소·동행**: 북부 성채, 서린과 유빈\n진행 중: 성채 지하 탐색\n관계: 서린은 루카를 믿기 시작했다\n미해결: 없음\n덧붙임: 무시');
+  assert.equal(board, '장소·동행: 북부 성채, 서린과 유빈\n진행 중: 성채 지하 탐색\n관계: 서린은 루카를 믿기 시작했다');
+  assert.ok(parse(`장소·동행: ${'가'.repeat(400)}\n진행 중: ${'나'.repeat(400)}`).length <= 450);
+});
+
+test('the overview is written from new facts, kept as the base after an edit, and injected first', async () => {
+  const { data, context, dispatch } = workerHarness();
+  const facts = [
+    { id: 'f1', keyword: '서린', kind: '관계', fact: '서린은 루카를 믿기로 했다.', turn: 2, sourceId: 'a1' },
+    { id: 'f2', keyword: '성채', kind: '설정', fact: '북부 성채 지하에 봉인이 있다.', turn: 4, sourceId: 'a2' },
+    { id: 'f3', keyword: '유빈', kind: '약속', fact: '유빈은 내일 성채로 함께 가기로 했다.', turn: 6, sourceId: 'a3' }
+  ];
+  data.set('nanoMemory:room', { lastId: 'a3', facts });
+  const asked = [];
+  context.chrome.runtime.sendMessage = async message => {
+    if (message.type !== 'LLM_PROMPT') return undefined;
+    asked.push(message.prompt);
+    return { success: true, text: '장소·동행: 북부 성채 앞, 서린·유빈\n진행 중: 성채 지하로 가기로 함\n관계: 서린은 루카를 믿음\n미해결: 봉인' };
+  };
+  const update = vm.runInContext('updateOverview', context);
+  const first = await update('room');
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /유빈은 내일 성채로/);
+  assert.match(first.text, /^장소·동행: 북부 성채 앞/);
+  // No new facts: no model call.
+  await update('room');
+  assert.equal(asked.length, 1);
+
+  await dispatch({ type: 'SET_OVERVIEW', chatId: 'room', text: '장소·동행: 성채 정문, 서린\n미해결: 봉인의 열쇠' });
+  data.set('nanoMemory:room', { lastId: 'a5', facts: [...facts,
+    ...['봉인은 피로 풀린다.', '서린은 열쇠를 숨겼다.', '유빈은 길을 잃었다.', '루카는 지도를 얻었다.']
+      .map((fact, i) => ({ id: `n${i}`, keyword: ['봉인', '서린', '유빈', '루카'][i], kind: '설정', fact, turn: 8 + i, sourceId: `a${4 + i}` }))] });
+  await update('room');
+  assert.equal(asked.length, 2);
+  assert.match(asked[1], /\[이전 상황판\]\n장소·동행: 성채 정문/);
+  assert.match(asked[1], /루카는 지도를 얻었다/);
+  assert.doesNotMatch(asked[1], /서린은 루카를 믿기로/);
+
+  vm.runInContext('activeMemory', context).set('room', { chatId: 'room', all: [{ id: 'a1', role: 'assistant', text: '안녕' }], units: [], ix: null });
+  let prepared = await dispatch({ type: 'GET_PREPARED_CONTEXT', chatId: 'room', outgoing: '간다' });
+  assert.match(prepared.content, /\n\[현재 상황\] 장소·동행: 북부 성채 앞, 서린·유빈 \/ 진행 중/);
+  await dispatch({ type: 'SET_OVERVIEW', chatId: 'room', enabled: false });
+  prepared = await dispatch({ type: 'GET_PREPARED_CONTEXT', chatId: 'room', outgoing: '간다' });
+  assert.doesNotMatch(prepared.content, /현재 상황/);
+});
+
+test('the overview takes at most a third of the room', () => {
+  const long = engine.contextWithAll(null, [], '간다', { overview: '가'.repeat(900), budget: 2000 });
+  assert.equal(long.selectedOverview, null);
+  const short = engine.contextWithAll(null, [], '간다', { overview: '장소·동행: 성채\n진행 중: 탐색', budget: 2000 });
+  assert.equal(short.selected[0].line, '[현재 상황] 장소·동행: 성채 / 진행 중: 탐색');
+});
+
+test('witnesses drop what the log files as a thing, and gain the subject when it is a person', () => {
+  const { context } = workerHarness();
+  const facts = [
+    { id: 'p1', keyword: '박하린', domain: '인물', fact: '박하린은 루카에게 본부까지 도보 20분이라고 말했다.', turn: 18, who: ['도윤'] },
+    { id: 'p2', keyword: '진명', domain: '개념', fact: '성좌가 내린 이름이 진명이다.', turn: 3, who: [] },
+    { id: 'p3', keyword: '진명', domain: '개념', fact: '서령은 루카의 진명을 물었다.', turn: 24, who: ['지평선', '진명', '엑스트라'] },
+    { id: 'p4', keyword: '진명', domain: '인물', fact: '루카의 진명이 드러났다.', turn: 25, who: [] }
+  ];
+  const witnesses = vm.runInContext('witnesses', context);
+  const people = vm.runInContext('peopleOf', context)(facts);
+  assert.deepEqual([...witnesses(facts[0], people)], ['박하린', '도윤']);
+  // "진명" is filed 개념 2:1 and never opens a fact: not someone. A name filed nowhere ("엑스트라") is kept.
+  assert.deepEqual([...witnesses(facts[2], people)], ['지평선', '엑스트라']);
+  // A given name and the full name are one person: not added twice.
+  assert.deepEqual([...witnesses({ ...facts[0], who: ['하린'] }, people)], ['하린']);
+});
+
+test('a restatement that says less than the memory it repeats does not replace it', () => {
+  const { context } = workerHarness();
+  const facts = [
+    { id: 'd1', keyword: '도윤', domain: '인물', kind: '약속', fact: '도윤은 배행자에게 면담을 제안했다.', turn: 18, who: ['도윤'] },
+    { id: 'd2', keyword: '도윤', domain: '인물', kind: '약속', fact: '도윤은 면담을 제안했다.', turn: 19, who: ['도윤'] }
+  ];
+  const ids = vm.runInContext('currentNotes', context)(facts).map(note => note.id);
+  assert.equal(ids.join(), 'd1');
+});
+
+test('a fact opening with a known person names them; pronouns are not witnesses', () => {
+  const { context } = workerHarness();
+  const facts = [
+    { id: 'h1', keyword: '박하린', domain: '인물', fact: '박하린은 군의관이다.', turn: 20, who: ['박하린'] },
+    { id: 'h2', keyword: '서령', domain: '인물', fact: '서령은 보급을 약속했다.', turn: 22, who: ['한서령'] },
+    { id: 'h3', keyword: '서령', domain: '인물', fact: '서령은 정보를 주기로 했다.', turn: 24, who: ['한서령'] },
+    { id: 'h4', keyword: '드론', domain: '개념', fact: '박하린은 드론에 대한 정보를 전했다.', turn: 28, who: [] },
+    { id: 'h5', keyword: '변수', domain: '개념', fact: '한서령은 6일 안에 접촉이 올 것이라 말했다.', turn: 26, who: ['나'] }
+  ];
+  const people = vm.runInContext('peopleOf', context)(facts);
+  const witnesses = vm.runInContext('witnesses', context);
+  assert.equal(witnesses(facts[3], people).join(), '박하린');
+  // "한서령" was listed in two different turns: known, though never a keyword.
+  assert.equal(witnesses(facts[4], people).join(), '한서령');
+});
+
+test('a fact with Chinese characters the source never used is dropped', () => {
+  const { context } = workerHarness();
+  const parse = vm.runInContext('parseNanoFacts', context);
+  const source = [{ turn: 2, text: '서령: 후원금은 화폐야. 권능이 없으면 죽어.' }];
+  const raw = JSON.stringify([
+    { keyword: '후원금', kind: '설정', domain: '개념', who: [], fact: '后援금은 화폐이다.' },
+    { keyword: '후원금', kind: '설정', domain: '개념', who: [], fact: '후원금은 화폐이다.' }
+  ]);
+  const facts = parse(raw, 2, 'a1', 16, [2], new Map(), source);
+  assert.equal(facts.map(fact => fact.fact).join('|'), '후원금은 화폐이다.');
+});
+
+test('a subject opening facts in several turns is a person; a kind in the keyword is no label', () => {
+  const { context } = workerHarness();
+  const facts = [
+    { id: 'k1', keyword: '관계', domain: '개념', kind: '관계', fact: '김도윤은 루카의 뒤를 막고 있다.', turn: 10, who: ['최현'] },
+    { id: 'k2', keyword: '본부', domain: '장소', kind: '약속', fact: '김도윤은 본부를 확인하고 싶어 한다.', turn: 16, who: [] },
+    { id: 'k3', keyword: '탑', domain: '개념', kind: '설정', fact: '탑은 대행자를 부른다.', turn: 1, who: [] }
+  ];
+  const people = vm.runInContext('peopleOf', context)(facts);
+  const witnesses = vm.runInContext('witnesses', context);
+  assert.equal(witnesses(facts[0], people).join(), '김도윤,최현');
+  assert.equal(witnesses(facts[2], people).join(), '');
+  const cards = vm.runInContext('nanoMemoryCards', context)('room', facts, '김도윤 뒤를 막고', Infinity);
+  const card = cards.find(c => c.id === 'nano:k1');
+  assert.equal(card.title, '');
+  const line = engine.contextWithAll(null, [], '간다', { summaryCards: [card] }).selected[0].line;
+  assert.equal(line, '[10 김도윤·최현] 김도윤은 루카의 뒤를 막고 있다.');
+});
+
+test('개념 is where unsure keywords land: a name filed only there is still a person when it keeps opening facts', () => {
+  const { context } = workerHarness();
+  const facts = [
+    { id: 'c1', keyword: '하린', domain: '개념', fact: '하린은 루카를 치료했다.', turn: 14, who: [] },
+    { id: 'c2', keyword: '하린', domain: '개념', fact: '하린은 식사를 권했다.', turn: 18, who: [] },
+    { id: 'c3', keyword: '봉', domain: '기술', fact: '봉은 질량을 싣는다.', turn: 4, who: [] },
+    { id: 'c4', keyword: '봉', domain: '기술', fact: '봉은 휘어지지 않는다.', turn: 9, who: ['봉', '진명'] },
+    { id: 'c5', keyword: '진명', domain: '개념', fact: '루카는 진명을 숨겼다.', turn: 20, who: [] }
+  ];
+  const people = vm.runInContext('peopleOf', context)(facts);
+  const witnesses = vm.runInContext('witnesses', context);
+  assert.equal(witnesses(facts[0], people).join(), '하린');
+  // A real call (기술) is not overturned by opening sentences; a doubtful name nobody treats as someone is dropped.
+  assert.equal(witnesses(facts[3], people).join(), '');
+});
+
+test('a kind written as the keyword is replaced by the subject, stored or new', () => {
+  const { context } = workerHarness();
+  const effective = vm.runInContext('effectiveNanoFacts', context);
+  const stored = [{ id: 's1', keyword: '관계', domain: '개념', kind: '관계', fact: '김도윤은 루카 뒤를 막고 있다.', turn: 10 },
+    { id: 's2', keyword: '상태', domain: '개념', kind: '상태', fact: '옆구리가 베였다.', turn: 9 }];
+  const out = effective(stored, { });
+  assert.equal(out[0].keyword, '김도윤');
+  assert.equal(out[1].keyword, '옆구리');
+  assert.equal(effective(stored, { s1: { keyword: '관계' } })[0].keyword, '관계');
+  const parse = vm.runInContext('parseNanoFacts', context);
+  const source = [{ turn: 10, text: '김도윤은 루카의 뒤를 막았다. 관계가 깊어졌다.' }];
+  const facts = parse(JSON.stringify([{ keyword: '관계', kind: '관계', domain: '개념', who: [], fact: '김도윤은 루카 뒤를 막고 있다.' }]), 10, 'a10', 16, [10], new Map(), source);
+  assert.equal(facts[0].keyword, '김도윤');
+});
+
+test("the model's domain call wins over the local guess, and a given name in the source counts", () => {
+  const { context } = workerHarness();
+  const parse = vm.runInContext('parseNanoFacts', context);
+  const source = [{ turn: 14, text: '하린이 구급 상자를 열었다. 박하린 군의관은 루카의 손을 잡았다.' }];
+  const facts = parse(JSON.stringify([{ keyword: '박하린', kind: '경험', domain: '인물', who: [], fact: '박하린은 루카를 응급 처치했다.' }]),
+    14, 'a14', 16, [14], new Map([['박하린', '개념']]), source);
+  assert.equal(facts[0].domain, '인물');
 });

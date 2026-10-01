@@ -3,6 +3,10 @@
   'use strict';
 
   const nativeSend = WebSocket.prototype.send;
+  // Trace Lite (Tampermonkey) reads this flag on every send and stands down, so a chat never
+  // gets two memory blocks when both are installed. The extension wins.
+  window.__TRACE_SEND_HOOK__ = 'extension';
+  const TRACE_BLOCK = '<!--TRACE-->';
   window.__CRACK_MATRIX_STAGED_CONTEXT = null;
   const roomFromPath = () => (location.pathname.match(/\/(?:stories\/[^/]+\/episodes|characters\/[^/]+\/chats|u\/[^/]+\/c)\/([^/?#]+)/) || [])[1] || '';
   // How long a message may wait for its memory when it was sent before the prepared prompt
@@ -56,6 +60,8 @@
         const payload = events[1];
         const outgoing = String(payload.message ?? payload.content ?? payload.text ?? '').trim();
         const field = ['message', 'content', 'text'].find(k => typeof payload[k] === 'string') || 'message';
+        // Already carries a Trace block (another hook installed around this one): send as is.
+        if (outgoing.includes(TRACE_BLOCK)) return nativeSend.call(this, raw);
         const room = roomFromPath();
         const staged = window.__CRACK_MATRIX_STAGED_CONTEXT;
         window.__CRACK_MATRIX_STAGED_CONTEXT = null;

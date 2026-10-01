@@ -37,7 +37,7 @@ const CrackMatrixEngine = (() => {
 
   const cleanLine = value => String(value || '').replace(/```/g, 'ˈˈˈ').replace(/<!--|-->/g, ' ').replace(/\s+/g, ' ').trim();
 
-  // "[14 크리·서린]": the turn and who was there. Memories sharing it share one line.
+  // "[14 루카·서린]": the turn and who was there. Memories sharing it share one line.
   function memoryMark(turn, who = []) {
     const names = (Array.isArray(who) ? who : []).map(cleanLine).filter(Boolean).join('·');
     const number = Number.isInteger(Number(turn)) && Number(turn) > 0 ? String(Number(turn)) : '';
@@ -103,6 +103,29 @@ const CrackMatrixEngine = (() => {
     const alnum = raw.match(/[a-z0-9_]{2,}/g) || [];
     for (const w of alnum) result.push(w);
     return result;
+  }
+
+  // A lore keyword must appear as its own word: "반지" in "반지를"/"반지야" but not in "반지갑",
+  // "차" not in "차갑다". Korean particles (and the 이 a consonant-final name takes before them)
+  // may follow; anything else glued on means a different word. Latin keywords need word edges.
+  // Particles and endings that may stack after a name: 크리에게로, 채연만이, 허민한테는,
+  // 아델라인과의, 권도윤이라면, 펜리스님이에요. Up to three in a row; longest first.
+  const KEYWORD_PARTICLES = ['으로부터', '에게서는', '한테서는', '이잖아', '이었다', '이에요', '이라면', '이라고', '이라는', '에게서', '한테서', '에서는', '으로는', '께서', '에게', '한테', '에서', '으로', '로서', '로써', '부터', '까지', '보다', '처럼', '만큼', '이랑', '하고', '이라', '이며', '이고', '이나', '이든', '이야', '이다', '였다', '라고', '라는', '라면', '인데', '인가', '인지', '잖아', '에요', '예요', '라도', '마저', '조차', '밖에', '대로', '뿐', '들', '은', '는', '이', '가', '을', '를', '의', '에', '께', '도', '만', '와', '과', '랑', '로', '아', '야', '여', '씨', '님', '요', '다', '인', '나'];
+  const KEYWORD_TAIL = `(?:${KEYWORD_PARTICLES.join('|')}){0,3}`;
+  const keywordPatterns = new Map();
+  function keywordAppears(text, keyword) {
+    const kw = String(keyword || '').normalize('NFKC').toLowerCase().trim();
+    if (!kw) return false;
+    let pattern = keywordPatterns.get(kw);
+    if (!pattern) {
+      const body = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*');
+      pattern = /[가-힣]$/.test(kw)
+        ? new RegExp(`(?:^|[^가-힣a-z0-9_])${body}${KEYWORD_TAIL}(?![가-힣a-z0-9_])`, 'u')
+        : new RegExp(`(?:^|[^a-z0-9_])${body}(?![a-z0-9_])`, 'u');
+      if (keywordPatterns.size > 2000) keywordPatterns.clear();
+      keywordPatterns.set(kw, pattern);
+    }
+    return pattern.test(String(text || '').normalize('NFKC').toLowerCase());
   }
 
   function unitsFromMessages(messages, chatId, minLen = 50, maxLen = 220) {
@@ -509,7 +532,7 @@ const CrackMatrixEngine = (() => {
       return scores;
     }
     const { edges, entities, vectors } = loreGraph(items, facts, turn);
-    const mentioned = text => new Set(entities.filter(name => loreNorm(text).includes(loreNorm(name))));
+    const mentioned = text => new Set(entities.filter(name => keywordAppears(text, name)));
     const direct = mentioned(userQuery);
     const recent = mentioned(recentContext);
     const verbs = loreVerbs(userQuery);
@@ -546,8 +569,6 @@ const CrackMatrixEngine = (() => {
     const lower = value => String(value || '').normalize('NFKC').toLowerCase();
     const draft = lower(userQuery);
     const text = lower(query);
-    const draftTerms = new Set(terms(draft));
-    const textTerms = new Set(terms(text));
     const keywordsOf = item => (Array.isArray(item.keywords) ? item.keywords : String(item.keywords || '').split(','))
       .map(kw => lower(kw).trim()).filter(Boolean);
     const why = new Map();
@@ -557,9 +578,9 @@ const CrackMatrixEngine = (() => {
     const contextHits = [];
     items.forEach((item, i) => {
       if (item.alwaysInclude) { forced.push(i); why.set(i, '상시'); return; }
-      const inDraft = keywordsOf(item).filter(kw => draft.includes(kw) || draftTerms.has(kw));
+      const inDraft = keywordsOf(item).filter(kw => keywordAppears(draft, kw));
       if (inDraft.length) { forced.push(i); why.set(i, `키워드: ${inDraft.join(', ')}`); return; }
-      const inContext = keywordsOf(item).filter(kw => text.includes(kw) || textTerms.has(kw));
+      const inContext = keywordsOf(item).filter(kw => keywordAppears(text, kw));
       if (inContext.length && item.triggerType === 'keyword') { forced.push(i); why.set(i, `키워드: ${inContext.join(', ')}`); return; }
       if (inContext.length) { contextHits.push(i); why.set(i, `키워드(직전 장면): ${inContext.join(', ')}`); }
     });
@@ -653,6 +674,7 @@ const CrackMatrixEngine = (() => {
   // Only memory, lore and optional user notes belong in this outgoing context.
   function contextWithAll(ix, messages, query, {
     userNote = '',
+    overview = '',
     loreList = [],
     summaryCards = [],
     budget = 2000,
@@ -685,7 +707,21 @@ const CrackMatrixEngine = (() => {
       }
     }
 
-    // 2. Long-term Summary Cards
+    // 2. Overview: where the story stands. It goes in every time, ahead of picked memory, but
+    // never takes more than a third of the room.
+    const overviewText = String(overview || '').split('\n').map(cleanLine).filter(Boolean).join(' / ');
+    let selectedOverview = null;
+    if (overviewText) {
+      const line = `[현재 상황] ${overviewText}`;
+      const sep = finalSelected.length ? 1 : 0;
+      if (line.length + sep <= Math.min(Math.floor(totalBudget / 3), remaining)) {
+        selectedOverview = { type: 'overview', line, text: overviewText, title: '현재 상황', content: overviewText, why: '항상' };
+        finalSelected.push(selectedOverview);
+        remaining -= line.length + sep;
+      }
+    }
+
+    // 3. Long-term Summary Cards
     const selectedSummaries = [];
     const byMark = new Map();
     for (const s of summaryCards) {
@@ -694,7 +730,7 @@ const CrackMatrixEngine = (() => {
       const host = mark && byMark.get(mark);
       if (host) {
         // Same turn and same people: append to that line instead of repeating the mark.
-        const piece = ` / ${memoryBody(s.title || '사건 요약', s.content)}`;
+        const piece = ` / ${memoryBody(s.title ?? '사건 요약', s.content)}`;
         if (piece.length > remaining) continue;
         host.line += piece;
         const card = { ...s, type: 'summary', line: '', text: `${s.title}: ${s.content}` };
@@ -703,7 +739,7 @@ const CrackMatrixEngine = (() => {
         remaining -= piece.length;
         continue;
       }
-      const line = cacheLine('기억', s.title || '사건 요약', s.content, s.turn, s.who);
+      const line = cacheLine('기억', s.title ?? '사건 요약', s.content, s.turn, s.who);
       const sep = finalSelected.length ? 1 : 0;
       if (line.length + sep > remaining) continue;
       const card = { ...s, type: 'summary', line, text: `${s.title}: ${s.content}` };
@@ -717,7 +753,7 @@ const CrackMatrixEngine = (() => {
     selectedSummaries.sort((a, b) => turnOf(a) - turnOf(b));
     finalSelected.splice(finalSelected.length - selectedSummaries.length, selectedSummaries.length, ...selectedSummaries);
 
-    // 3. Lorebook Items (Hybrid Keyword + Semantic Vector)
+    // 4. Lorebook Items (Hybrid Keyword + Semantic Vector)
     const selectedLore = selectLore(loreList, contextQuery, {
       budget: Math.min(600, Math.floor(remaining * 0.55)),
       userQuery: query, recentContext: loreRecentContext, facts: loreFacts, turn: currentTurn, semantic: loreSemantic
@@ -730,7 +766,7 @@ const CrackMatrixEngine = (() => {
       }
     }
 
-    // 4. Original passages (no-LLM mode) or legacy chunks
+    // 5. Original passages (no-LLM mode) or legacy chunks
     const memoryResult = passageIndex
       ? { selected: passageSearch(passageIndex, passageQuery, { contextQuery: passageContext, budget: remaining, maxTurn, semantic: passageSemantic }) }
       : ix ? contextFor(ix, messages, contextQuery, { budget: remaining }) : { selected: [] };
@@ -743,6 +779,7 @@ const CrackMatrixEngine = (() => {
       selected: finalSelected,
       userNote: cleanUserNote,
       selectedUserNote,
+      selectedOverview,
       selectedSummaries,
       selectedLore,
       selectedMemory,
@@ -820,7 +857,7 @@ const CrackMatrixEngine = (() => {
 
   function cleanDetailSentence(s) {
     return String(s || '')
-      // "▍크리 「 대사 」" dialogue markers become "크리: 대사".
+      // "▍루카 「 대사 」" dialogue markers become "루카: 대사".
       .replace(/^[▍▌│|]\s*([^\s「『"“]{1,10})\s*[「『"“]\s*/, '$1: ')
       .replace(/〔\s*〕|\*{1,2}/g, ' ')
       .replace(/^["\x27「『“\s─–—]+|["\x27」』”\s─–—]+$/g, '')
@@ -835,7 +872,7 @@ const CrackMatrixEngine = (() => {
   function cleanDetailSpeaker(raw) {
     if (!raw) return null;
     // Strip any leading/trailing symbols (⚠ ▶ ■ 👤 * [ " ...), not a fixed list.
-    // "크리｜Lv.1" is a status header; the name is the part before the bar.
+    // "루카｜Lv.1" is a status header; the name is the part before the bar.
     const s = String(raw).split(/[｜|]/)[0].replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '').trim();
     if (s.length < 2 || s.length > 8) return null;
     if (/\d/.test(s)) return null;
@@ -859,7 +896,7 @@ const CrackMatrixEngine = (() => {
 
   function extractWindowDetail(windowMsgs, startTurn, endTurn) {
     // 1. Aggressively strip mechanical INFO blocks and prompt directives
-    const INFO_BLOCK_REGEX = /(?:```(?:INFO|STATUS|STAT|SYSTEM)[\s\S]*?```|\[\s*#[\s\S]*?(?:\]|$)|└?\[\s*(?:호감도|성향|체력|마력|능력치|스탯|스킬|레벨|경험치|아이템|소지품|골드|골|퀘스트|위치|현재\s*상태|버프|디버프|HP|MP|EXP|Lv)[\s\S]*?(?:\]|$)|(?:\(|\[)\s*ooc[\s\S]*?(?:\)|\]|$)|⚠\s*SYSTEM[\s\S]*?(?:\n|$)|#\s*\(크리의[\s\S]*?(?:\)|\]|$))/gi;
+    const INFO_BLOCK_REGEX = /(?:```(?:INFO|STATUS|STAT|SYSTEM)[\s\S]*?```|\[\s*#[\s\S]*?(?:\]|$)|└?\[\s*(?:호감도|성향|체력|마력|능력치|스탯|스킬|레벨|경험치|아이템|소지품|골드|골|퀘스트|위치|현재\s*상태|버프|디버프|HP|MP|EXP|Lv)[\s\S]*?(?:\]|$)|(?:\(|\[)\s*ooc[\s\S]*?(?:\)|\]|$)|⚠\s*SYSTEM[\s\S]*?(?:\n|$)|#\s*\(루카의[\s\S]*?(?:\)|\]|$))/gi;
 
     const windowSpeakers = new Set();
     const candidateSentences = [];
@@ -1104,7 +1141,9 @@ const CrackMatrixEngine = (() => {
   // When the status window has its own line, everything after the place icon is the place.
   const SCENE_PLACE_LINE = /[🏢🏠🌁📍🏛🏫🏥🌲🏙🏰⛪🏚🏕🏞🌆🌃🚪]\uFE0F?\s*([^|｜\n]{1,40})$/u;
   const SCENE_DAY = /(\d+\s*일차)/u;
-  const STATUS_LINE = /^(?:[⌛⏳📍🕒⏰🗓📅💼🤝📝📊🎒❤️💰]|\s*(?:물자|호감도|상태창|스탯|획득|소모|인벤토리|소지품)(?=\s|$|[:：]))|\d+\s*일차|\d{1,2}\/\d{1,2}\s*\[/u;
+  // Also "〔👤〕 …" / "─ 〔인연〕 …" panels, "상태:[평온함]" / "능력: …" fields and
+  // relationship rows "∙ 코코 | 😊 | 20 #…", "▸루시아｜💓·…｜Lv.87".
+  const STATUS_LINE = /^(?:[⌛⏳📍🕒⏰🗓📅💼🤝📝📊🎒❤️💰]|\s*(?:물자|호감도|상태창|스탯|획득|소모|인벤토리|소지품)(?=\s|$|[:：])|\s*[─—-]*\s*〔[^〕\n]{0,8}〕|\s*(?:상태|능력|등급|스킬|직업|레벨)\s*[:：]|\s*[▸∙•]\s*[가-힣]{2,8}\s*[｜|])|\d+\s*일차|\d{1,2}\/\d{1,2}\s*\[/u;
 
   // Status headers written as fields separated by ｜, holding a clock time or a date.
   function pipeHeaderScene(line) {
@@ -1119,9 +1158,10 @@ const CrackMatrixEngine = (() => {
   function structureMessage(text) {
     const lines = stripMarkdownComments(stripOwnBlock(text)).replace(/```[\s\S]*?```/g, '\n').split('\n');
     let scene = '';
+    let speakerLine = '';
     const body = [];
     for (const raw of lines) {
-      // "INFO[크리｜男｜21…]", "[관계｜레오😠｜…]", "└[일정…]": status blocks, also when they
+      // "INFO[루카｜男｜21…]", "[관계｜레오😠｜…]", "└[일정…]": status blocks, also when they
       // follow story text on the same line.
       const line = raw.replace(/INFO\s*\[[\s\S]*$/u, '').replace(/(?:^|\s)[―—└-]*\s*\[[^\]\n]{1,20}[｜|：:][^\]\n]*\][\s\S]*$/u, '').trim();
       if (!line) continue;
@@ -1140,7 +1180,15 @@ const CrackMatrixEngine = (() => {
         if (joined) body.push(tail);
         continue;
       }
-      body.push(line.replace(/!\[[^\]]*\]\([^)]+\)/g, '').replace(/[*_]{1,3}/g, '').replace(/^[▍▌]\s*([^\s「『"“]{1,10})\s*[「『"“]\s*/u, '$1: '));
+      const plain = line.replace(/!\[[^\]]*\]\([^)]+\)/g, '').replace(/[*_]{1,3}/g, '').trim();
+      // "**▍백은하**" or "**『 서은채 』**" alone on a line names who speaks the quote lines
+      // that follow: "「 어머… 」".
+      const label = plain.match(/^(?:[▍▌]\s*([^\s「『"“]{1,10})|[『【]\s*([^\s』】]{1,10})\s*[』】])$/u);
+      if (label) { speakerLine = label[1] || label[2]; continue; }
+      const quoted = /^[「『"“]/u.test(plain);
+      const said = speakerLine && quoted ? `${speakerLine}: ${plain.replace(/^[「『"“]\s*/u, '')}` : plain;
+      if (!quoted) speakerLine = '';
+      body.push(said.replace(/^[▍▌]\s*([^\s「『"“]{1,10})\s*[「『"“]\s*/u, '$1: '));
     }
     const kept = body.map(line => line.replace(/\s+/g, ' ').trim()).filter(Boolean);
     return { scene, lines: kept, body: kept.join(' ') };
@@ -1181,6 +1229,28 @@ const CrackMatrixEngine = (() => {
 
   // "서린｜…", "유빈💭｜…", "지크: …" — who is speaking or thinking.
   const SPEAKER_LABEL = /(?:^|\s)([가-힣]{2,8})(?:💭|\p{Extended_Pictographic})?\s*[｜|:：]\s*["“「『]?/gu;
+  // Status windows use the same "label｜value" shape: "능력: 공상구현화", "상태:[평온함]",
+  // "▸로완｜😏·이제 내꺼야｜Lv.86". Field names, and labels whose value is a level, a bracket or a
+  // number, are not speakers, unless a person marker stands right before the label.
+  const STATUS_FIELDS = new Set(['상태', '능력', '등급', '스킬', '호감도', '친밀도', '소지품', '인벤토리', '물자', '목표', '위치', '장소', '시간', '날짜', '일정', '직업', '레벨', '체력', '마력', '스탯', '관계', '인연', '속보', '답변', '퀘스트', '보상', '획득', '소모', '현재', '진행', '요약']);
+  // "남자｜…", "무전｜…": an unnamed voice is not one person; as a name it would pull in every
+  // passage that mentions a man. Titles ("심사관", "교수") usually stay one recurring person.
+  const CROWD_SPEAKERS = new Set(['남자', '여자', '소년', '소녀', '노인', '아이', '사람', '사람들', '군인', '병사', '생존자', '무전', '목소리', '일동', '모두', '학생', '학생들', '주민', '행인', '군중', '누군가']);
+  function speakersIn(text) {
+    const names = [];
+    for (const match of text.matchAll(SPEAKER_LABEL)) {
+      const name = match[1];
+      const after = text.slice(match.index + match[0].length, match.index + match[0].length + 4);
+      if (STATUS_FIELDS.has(name)) continue;
+      // "〔👤〕 크리｜Lv.1", "▸루시아｜…": a person marker before the label means it is a name.
+      const marked = /[▸∙•〕👤]\s*$/u.test(text.slice(Math.max(0, match.index - 3), match.index + match[0].indexOf(name)));
+      if (!marked && /^\s*(?:lv|[\[(\d])/i.test(after)) continue;
+      names.push(name);
+    }
+    // Relationship lists: "▸루시아｜💓·…", "∙ 코코 | ❤️ | …".
+    for (const match of text.matchAll(/[▸∙•]\s*([가-힣]{2,8})\s*[｜|]/gu)) if (!STATUS_FIELDS.has(match[1])) names.push(match[1]);
+    return [...new Set(names)];
+  }
 
   function buildPassageIndex(messages) {
     const units = [];
@@ -1198,7 +1268,7 @@ const CrackMatrixEngine = (() => {
         const text = buffer.trim();
         // A fragment this short ("뭐라도 해야했으니까요..") says nothing on its own.
         if (text.length >= 25) {
-          const speakers = [...new Set([...text.matchAll(SPEAKER_LABEL)].map(match => match[1]))];
+          const speakers = speakersIn(text);
           for (const name of speakers) speakerCounts.set(name, (speakerCounts.get(name) || 0) + 1);
           units.push({ unitId: `p:${index}:${at++}`, messageId: String(message.id ?? index), turn: index + 1,
             role: message.role, scene: lastScene, speakers, text, len: text.length });
@@ -1211,7 +1281,7 @@ const CrackMatrixEngine = (() => {
       }
       if (buffer) flush();
     });
-    const names = new Set([...speakerCounts].filter(([name, count]) => count >= 2 && !STOPWORDS_SET.has(name)).map(([name]) => name));
+    const names = new Set([...speakerCounts].filter(([name, count]) => count >= 2 && !STOPWORDS_SET.has(name) && !CROWD_SPEAKERS.has(name)).map(([name]) => name));
     return { units, ix: index(units), names };
   }
 
@@ -1248,12 +1318,12 @@ const CrackMatrixEngine = (() => {
     }
     const names = pix.names || new Set();
     // Names in the draft: passages about that person, and above all their own lines, come first.
-    const draftNames = [...names].filter(name => query.includes(name));
+    const draftNames = [...names].filter(name => keywordAppears(query, name));
     if (draftNames.length) {
       for (const [id, score] of scores) {
         const unit = byId.get(id);
         const factor = unit.speakers?.some(name => draftNames.includes(name)) ? 1.5
-          : draftNames.some(name => unit.text.includes(name)) ? 1.3 : 1;
+          : draftNames.some(name => keywordAppears(unit.text, name)) ? 1.3 : 1;
         scores.set(id, score * factor);
       }
     }
@@ -1261,7 +1331,7 @@ const CrackMatrixEngine = (() => {
     // thread; pull their passages in at a low weight. Only names, so the search cannot drift.
     const seedBest = Math.max(0, ...scores.values());
     const seeds = [...scores].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([id]) => byId.get(id));
-    const related = [...new Set(seeds.flatMap(unit => [...names].filter(name => unit.text.includes(name))))]
+    const related = [...new Set(seeds.flatMap(unit => [...names].filter(name => keywordAppears(unit.text, name))))]
       .filter(name => !draftNames.includes(name)).slice(0, 3);
     for (const name of related) {
       const hits = search(pix.ix, name).slice(0, 8);
@@ -1292,10 +1362,10 @@ const CrackMatrixEngine = (() => {
     }
     // An old passage alone can mislead. For the people in an old pick, add their most recent
     // passage (still outside the live window), so the model sees where things stand now.
-    const newestFor = name => pix.units.filter(unit => unit.turn < maxTurn && unit.text.includes(name)).at(-1);
+    const newestFor = name => pix.units.findLast(unit => unit.turn < maxTurn && keywordAppears(unit.text, name));
     for (const unit of [...picked]) {
       if (lastTurn - unit.turn < 20) continue;
-      for (const name of [...names].filter(name => unit.text.includes(name)).slice(0, 2)) {
+      for (const name of [...names].filter(name => keywordAppears(unit.text, name)).slice(0, 2)) {
         const latest = newestFor(name);
         if (!latest || latest.turn - unit.turn < 10 || picked.some(other => other.unitId === latest.unitId)) continue;
         const line = `[${latest.turn}${latest.scene ? ` ${cleanLine(latest.scene)}` : ''}] ${cleanLine(latest.text)}`;
@@ -1781,6 +1851,7 @@ const CrackMatrixEngine = (() => {
     structureMessage,
     buildPassageIndex,
     passageSearch,
+    keywordAppears,
     USER_START,
     USER_END,
     MARKERS
@@ -2052,6 +2123,8 @@ var CrackMemoryEngine = CrackMatrixEngine;
     renderLiveCards();
   }
 
+  const extensionPresent = () => page.__TRACE_SEND_HOOK__ === 'extension';
+
   // --- WebSocket Hook for Auto-Injection ---
   const nativeSend = page.WebSocket.prototype.send;
   page.WebSocket.prototype.send = function (raw) {
@@ -2066,6 +2139,8 @@ var CrackMemoryEngine = CrackMatrixEngine;
 
     const socket = this;
     const outgoing = String(frame.payload.message ?? frame.payload.content ?? frame.payload.text ?? '');
+    // The Trace extension is installed too: it injects, Trace Lite stays out of the way.
+    if (extensionPresent() || outgoing.includes(E.USER_START)) return nativeSend.call(this, raw);
     const mem = active.get(id);
     const lores = getLores(id);
     // Reuse the passage index after the first preview or send in this room.
@@ -2454,6 +2529,11 @@ var CrackMemoryEngine = CrackMatrixEngine;
     }
 
     btn.classList.remove('syncing');
+    if (extensionPresent()) {
+      btn.classList.add('disabled');
+      txt.textContent = 'Trace 확장이 대신 주입 중';
+      return;
+    }
     if (!isEnabled(id)) {
       btn.classList.add('disabled');
       txt.textContent = '자동 기억 꺼짐';

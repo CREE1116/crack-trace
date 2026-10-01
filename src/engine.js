@@ -1,7 +1,7 @@
 /* Deterministic, browser-safe retrieval. No network or storage access. */
 const CrackMemoryEngine = (() => {
   const STOP = new Set(['그리고', '하지만', '그래서', '그런데', '지금', '오늘', '이번', '현재', '정말', '조금', '있다', '없다', '한다', '했다', 'there', 'this', 'that', 'with', 'from']);
-  const AUTO_STOP = new Set(['그렇게', '그랬다', '했는데', '있었다', '말했다', '하는데', '이제는', '그녀는', '그들은', '자신의', '했다는', '그것은', '그대로', '다시', '진짜', '계속', '크리는']);
+  const AUTO_STOP = new Set(['그렇게', '그랬다', '했는데', '있었다', '말했다', '하는데', '이제는', '그녀는', '그들은', '자신의', '했다는', '그것은', '그대로', '다시', '진짜', '계속']);
   const PARTICLES = ['으로', '에서', '에게', '처럼', '까지', '부터', '만큼', '조차', '마다', '은', '는', '이', '가', '을', '를', '의', '에', '와', '과', '도', '만', '로'];
   const START = '<!--CRACK_UBIS_MEMORY_START';
   const END = 'CRACK_UBIS_MEMORY_END-->';

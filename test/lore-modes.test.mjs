@@ -81,3 +81,15 @@ test('relations are read from the lore text when none are written', () => {
   assert.equal(ask('아린이 쓰는 무기는?')[0], 'moonblade');
   assert.equal(ask('도윤이 쓰는 무기는?')[0], 'sunlance');
 });
+
+test('a keyword triggers only as its own word, particles allowed', () => {
+  const lores = [
+    { id: 'ring', title: '약혼 반지', keywords: ['반지'], triggerType: 'keyword', content: '서령이 준 은반지.' },
+    { id: 'car', title: '차', keywords: ['차'], triggerType: 'keyword', content: '아린의 검은 세단.' }
+  ];
+  assert.deepEqual(ids(engine.selectLore(lores, '반지갑을 열자 차갑게 웃었다')), []);
+  assert.deepEqual(ids(engine.selectLore(lores, '반지를 끼고 차에 탔다')).sort(), ['car', 'ring']);
+  assert.ok(engine.keywordAppears('그건 아린이었다', '아린'));
+  assert.ok(engine.keywordAppears('은빛열쇠로', '은빛 열쇠'));
+  assert.ok(!engine.keywordAppears('월광검술', '월광검'));
+});

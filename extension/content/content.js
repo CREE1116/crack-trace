@@ -518,7 +518,7 @@
       const id = chatId();
       const modal = document.getElementById('cm-master-modal');
       if (id && modal?.classList.contains('open') && modal.querySelector('#cm-master-tab-deck.active') &&
-          (changes[`nanoMemory:${id}`] || changes[`nanoOverrides:${id}`] || changes[`dropKw:${id}`] || changes[`graph:${id}`])) {
+          (changes[`nanoMemory:${id}`] || changes[`nanoOverrides:${id}`] || changes[`dropKw:${id}`] || changes[`graph:${id}`] || changes[`overview:${id}`])) {
         scheduleDeckRender(id, modal);
       }
       if (id && (changes[`nanoMemory:${id}`] || changes[`nanoOverrides:${id}`] || changes[`dropKw:${id}`])) {
@@ -1542,6 +1542,7 @@
               </div>
 
               <!-- Evolution Cards List -->
+              <div id="cm-deck-overview"></div>
               <div id="cm-deck-pins"></div>
               <div id="cm-deck-cards-list" class="cm-memory-list"></div>
             </div>
@@ -1725,7 +1726,7 @@
                     <option value="">기본</option><option value="0.4">좁게</option><option value="0.9">보통</option><option value="1.4">넓게</option><option value="2">아주 넓게</option>
                   </select>
                 </div>
-                <p id="cm-font-preview" class="cm-font-preview">크리는 은빛 열쇠를 루시아의 손에 쥐여 주었다. “이번엔 꼭 돌아올게.”</p>
+                <p id="cm-font-preview" class="cm-font-preview">글꼴 미리보기 — 가나다라마바사 ABC 123 “대사는 이렇게 보입니다.”</p>
                 <div style="border-top: 1px solid var(--cm-line);padding-top: 10px;margin-top: 10px">
                   <label class="cm-switch-label full">
                     <input id="cm-opt-perf" type="checkbox" checked>
@@ -1878,12 +1879,65 @@
       box = document.createElement('div');
       box.id = 'cm-deck-branch';
       box.className = 'cm-notice';
-      modal.querySelector('#cm-deck-pins')?.before(box);
+      modal.querySelector('#cm-deck-overview')?.before(box);
     }
     chrome.storage.local.get(`branchOf:${id}`, res => {
       const branch = res[`branchOf:${id}`];
       box.hidden = !branch || chatId() !== id;
       if (branch) box.textContent = `🌱 분기된 대화예요. 원본 대화의 ${branch.turns}번째 턴까지 같아서, 그때까지의 기억 ${branch.facts}건과 고정·로어·유저노트를 가져왔어요. 이후 기억은 이 대화에서 따로 쌓여요.`;
+    });
+  }
+
+  // The overview board: rewritten by the LLM as facts come in, editable, always injected.
+  function renderOverview(id, modal) {
+    const box = modal.querySelector('#cm-deck-overview');
+    if (!box) return;
+    chrome.runtime.sendMessage({ type: 'GET_OVERVIEW', chatId: id }, reply => {
+      if (chatId() !== id || !box.isConnected) return;
+      const overview = reply?.overview || {};
+      box.replaceChildren();
+      if (!nanoModeEnabled) return;
+      const card = document.createElement('div');
+      card.className = 'cm-card highlight';
+      const head = document.createElement('div');
+      head.className = 'cm-nano-fact-head';
+      const title = document.createElement('strong');
+      title.textContent = '🧭 현재 상황 · 매번 함께 들어갑니다';
+      const controls = document.createElement('span');
+      const toggleLabel = document.createElement('label');
+      toggleLabel.className = 'cm-switch-label';
+      const toggle = document.createElement('input');
+      toggle.type = 'checkbox';
+      toggle.checked = overview.enabled !== false;
+      toggle.setAttribute('aria-label', '현재 상황 주입');
+      toggle.onchange = () => chrome.runtime.sendMessage({ type: 'SET_OVERVIEW', chatId: id, enabled: toggle.checked });
+      toggleLabel.append(toggle, document.createTextNode(' 주입'));
+      const refresh = document.createElement('button');
+      refresh.type = 'button';
+      refresh.className = 'cm-btn-secondary small';
+      refresh.textContent = '다시 만들기';
+      refresh.title = '지금까지의 기억으로 상황판을 새로 씁니다. 직접 고친 내용은 바탕으로 씁니다.';
+      refresh.onclick = () => {
+        refresh.disabled = true;
+        refresh.textContent = '만드는 중…';
+        chrome.runtime.sendMessage({ type: 'REFRESH_OVERVIEW', chatId: id }, result => {
+          if (!result?.success) alert(result?.error || '상황판을 만들지 못했습니다.');
+          if (box.isConnected) renderOverview(id, modal);
+        });
+      };
+      controls.append(toggleLabel, refresh);
+      head.append(title, controls);
+      const text = document.createElement('textarea');
+      text.className = 'cm-textarea';
+      text.value = overview.text || '';
+      text.maxLength = 450;
+      text.rows = 4;
+      text.placeholder = '기억이 몇 개 쌓이면 자동으로 채워집니다. 직접 써도 됩니다.';
+      text.setAttribute('aria-label', '현재 상황');
+      // Saved when the box loses focus; the next rewrite builds on the edit.
+      text.onchange = () => chrome.runtime.sendMessage({ type: 'SET_OVERVIEW', chatId: id, text: text.value });
+      card.append(head, text);
+      box.append(card);
     });
   }
 
@@ -1971,6 +2025,7 @@
         searchTimer = setTimeout(() => { deckSearch = search.value.trim().toLowerCase(); renderMemoryDeckTab(chatId(), modal); }, 200);
       };
     }
+    renderOverview(id, modal);
     renderPinnedMemories(id, modal);
     renderBranchNotice(id, modal);
 
